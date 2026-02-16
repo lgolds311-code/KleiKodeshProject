@@ -1,20 +1,27 @@
 <template>
     <div class="flex-column height-fill">
+        <!-- ============================================ -->
+        <!-- HEADER BAR -->
+        <!-- ============================================ -->
         <div class="flex-between bar commentary-header"
              style="position: relative;">
+            <!-- Search Overlay -->
             <GenericSearch ref="searchRef"
                            :is-open="isSearchOpen"
-                           :current-match-index="search.currentMatchIndex.value"
-                           :total-matches="search.totalMatches.value"
+                           :current-match-index="currentMatchIndex"
+                           :total-matches="totalMatches"
                            top-offset="calc(100% + 8px)"
                            @close="handleSearchClose"
                            @search="handleSearch"
                            @next="handleSearchNext"
                            @previous="handleSearchPrevious" />
+
+            <!-- Title -->
             <span class="bold smaller-em commentary-title">{{ commentaryTitle }}</span>
 
+            <!-- Navigation Controls -->
             <div class="flex-row flex-center commentary-navigation">
-
+                <!-- Previous/Next Line Buttons -->
                 <button class="flex-center c-pointer nav-btn"
                         @click="previousLine"
                         :disabled="props.selectedLineIndex === undefined || props.selectedLineIndex <= 0"
@@ -31,6 +38,7 @@
                           class="small-icon" />
                 </button>
 
+                <!-- Search Button -->
                 <button class="flex-center c-pointer nav-btn"
                         @click="openSearch"
                         title="חיפוש (Ctrl+F)">
@@ -38,20 +46,23 @@
                           class="small-icon" />
                 </button>
 
+                <!-- Filter Dropdown -->
                 <CommentaryConnectionTypeFilter :book="book"
                                                 :selected-connection-type-id="selectedConnectionTypeId"
                                                 :available-options="availableFilterOptions"
                                                 @filter-change="handleFilterChange" />
 
+                <!-- Commentary Selector Combobox -->
                 <Combobox v-model="comboboxSelectedValue"
                           :options="groupOptions"
                           placeholder="בחר פרשן..."
                           dir="rtl" />
 
+                <!-- Previous/Next Group Buttons -->
                 <button class="flex-center c-pointer nav-btn"
                         @click="previousGroup"
                         :disabled="currentGroupIndex === 0"
-                        title="קבוצה קודמת">
+                        title="דלג אחורה">
                     <Icon icon="fluent:chevron-up-28-regular"
                           class="small-icon" />
                 </button>
@@ -59,12 +70,13 @@
                 <button class="flex-center c-pointer nav-btn"
                         @click="nextGroup"
                         :disabled="currentGroupIndex === linkGroups.length - 1"
-                        title="קבוצה הבאה">
+                        title="דלג קדימה">
                     <Icon icon="fluent:chevron-down-28-regular"
                           class="small-icon" />
                 </button>
             </div>
 
+            <!-- Close Button -->
             <button class="flex-center c-pointer commentary-close-btn"
                     @click="handleClose"
                     title="סגור פאנל">
@@ -73,11 +85,16 @@
             </button>
         </div>
 
+        <!-- ============================================ -->
+        <!-- CONTENT AREA -->
+        <!-- ============================================ -->
         <div class="commentary-content-container"
              ref="commentaryContentRef"
              :style="commentaryStyles"
              tabindex="0"
              @keydown="handleKeyDown">
+
+            <!-- Loading State -->
             <div v-if="isLoading"
                  class="flex-column flex-center height-fill text-secondary commentary-loading">
                 <Icon icon="fluent:spinner-ios-20-regular"
@@ -85,11 +102,13 @@
                 <div>טוען קשרים...</div>
             </div>
 
+            <!-- Empty State -->
             <div v-else-if="linkGroups.length === 0"
                  class="flex-column flex-center height-fill text-secondary commentary-placeholder">
                 <div class="bold placeholder-text">לא נמצרו קשרים בקטגוריה זו</div>
             </div>
 
+            <!-- Virtual Scroller with Commentary Content -->
             <DynamicScroller v-else
                              ref="commentaryScrollerRef"
                              class="commentary-scroller"
@@ -102,10 +121,7 @@
                 <template #default="{ item, index, active }">
                     <DynamicScrollerItem :item="item"
                                          :active="active"
-                                         :size-dependencies="[
-                                            item.html?.length || 0,
-                                            containerWidth
-                                         ]"
+                                         :size-dependencies="[item.html?.length || 0, containerWidth]"
                                          :data-index="index"
                                          :data-commentary-item-observer="item.id">
 
@@ -114,8 +130,8 @@
                              class="bold group-header selectable"
                              :class="{ 'c-pointer': item.targetBookId !== undefined }"
                              :data-group-index="item.groupIndex"
-                             @click="handleGroupClick(item)">
-                            {{ item.groupName }}
+                             @click="handleGroupClick(item)"
+                             v-html="item.groupName">
                         </div>
 
                         <!-- Individual Commentary Link -->
@@ -132,6 +148,9 @@
 </template>
 
 <script setup lang="ts">
+// ============================================
+// IMPORTS
+// ============================================
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useFocus, useEventListener } from '@vueuse/core'
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
@@ -140,7 +159,7 @@ import GenericSearch from './common/GenericSearch.vue'
 import CommentaryConnectionTypeFilter from './CommentaryConnectionTypeFilter.vue'
 import { Icon } from '@iconify/vue'
 
-import { useContentSearch } from '../composables/useContentSearch'
+import { useVirtualizedSearch } from '../composables/useVirtualizedSearch'
 import { commentaryService, type CommentaryLinkGroup } from '../services/commentaryService'
 import { dbService } from '../services/dbService'
 import { useTabStore } from '../stores/tabStore'
@@ -148,8 +167,10 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useCategoryTreeStore } from '../stores/categoryTreeStore'
 import type { Book } from '../types/Book'
 import { hasConnections } from '../types/Book'
-import type { Link } from '../types/Link'
 
+// ============================================
+// PROPS & EMITS
+// ============================================
 const props = withDefaults(defineProps<{
     bookId?: number
     selectedLineIndex?: number
@@ -166,78 +187,51 @@ const emit = defineEmits<{
     (e: 'navigate-line', newIndex: number): void
 }>()
 
+// ============================================
+// STORES
+// ============================================
 const tabStore = useTabStore()
 const settingsStore = useSettingsStore()
 const categoryTreeStore = useCategoryTreeStore()
 
-// Reactive dark mode detection
-const isDarkMode = ref(false)
+// ============================================
+// REFS & STATE
+// ============================================
+// DOM References
+const commentaryScrollerRef = ref<InstanceType<typeof DynamicScroller> | null>(null)
+const commentaryContentRef = ref<HTMLElement | null>(null)
+const searchRef = ref<InstanceType<typeof GenericSearch> | null>(null)
 
-const updateDarkMode = () => {
-    isDarkMode.value = document.documentElement.classList.contains('dark')
-}
-
-onMounted(() => {
-    updateDarkMode()
-    const observer = new MutationObserver(updateDarkMode)
-    observer.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ['class']
-    })
-
-    // Track container width for responsive height estimation
-    let resizeObserver: ResizeObserver | null = null
-    nextTick(() => {
-        if (commentaryContentRef.value) {
-            // Set initial width
-            containerWidth.value = commentaryContentRef.value.clientWidth
-
-            // Watch for resize
-            resizeObserver = new ResizeObserver((entries) => {
-                for (const entry of entries) {
-                    const newWidth = entry.contentRect.width
-                    containerWidth.value = newWidth
-
-                    // Force multiple updates when width changes to ensure recalculation
-                    nextTick(() => {
-                        // Trigger resize event immediately
-                        window.dispatchEvent(new Event('resize'))
-                        forceScrollerUpdate()
-                        // Second update after a delay to catch any late renders
-                        setTimeout(() => {
-                            window.dispatchEvent(new Event('resize'))
-                            forceScrollerUpdate()
-                        }, 200)
-                    })
-                }
-            })
-            resizeObserver.observe(commentaryContentRef.value)
-        }
-    })
-
-    onUnmounted(() => {
-        observer.disconnect()
-        if (resizeObserver) {
-            resizeObserver.disconnect()
-        }
-    })
-})
-
-// Computed styles that respect dark mode
-const commentaryStyles = computed(() => ({
-    backgroundColor: !isDarkMode.value && settingsStore.readingBackgroundColor
-        ? settingsStore.readingBackgroundColor
-        : 'var(--bg-primary)',
-    color: !isDarkMode.value && settingsStore.readingBackgroundColor
-        ? 'var(--reading-text-color)'
-        : 'var(--text-primary)'
-}))
-
-// Commentary state
+// Core State
 const linkGroups = ref<CommentaryLinkGroup[]>([])
 const isLoading = ref(false)
+const isDarkMode = ref(false)
+const containerWidth = ref(0)
 
-// Get filter state from tab store, with smart default
+// Navigation State
+const isNavigating = ref(false) // Prevents scroll tracking during programmatic scrolls
+const isLoadingFromNavigation = ref(false) // Flag for next/previous line navigation
+const pendingNavigationTargetBookId = ref<number | undefined>(undefined)
+const lastScrollTop = ref(0)
+const scrollDirection = ref<'up' | 'down' | 'none'>('none')
+
+// Combobox & Scroll Tracking State
+// NOTE: Two separate systems:
+// 1. currentGroupIndex - Updated by scroll tracking (based on CENTER of viewport)
+// 2. Persistence system - Saves/restores based on TOP of viewport
+const currentGroupIndex = ref(0)
+const comboboxSelectedValue = ref<string | number>(0)
+
+// Selection State
+const selectAllWasPressed = ref(false)
+
+// Filter Options
+const availableFilterOptions = ref<Array<{ label: string; value: number }>>([])
+
+// ============================================
+// COMPUTED PROPERTIES
+// ============================================
+// Filter state from tab store with smart default
 const selectedConnectionTypeId = computed({
     get: () => {
         const activeTab = tabStore.activeTab
@@ -264,95 +258,28 @@ const selectedConnectionTypeId = computed({
     }
 })
 
-// SIMPLIFIED STATE - Two separate variables for scroll tracking vs combobox editing
-const currentGroupIndex = ref(0) // Tracks current scroll position (updated by intersection observer)
-const comboboxSelectedValue = ref<string | number>(0) // Separate value for combobox display/editing
+// Dynamic styles based on dark mode and settings
+const commentaryStyles = computed(() => ({
+    backgroundColor: !isDarkMode.value && settingsStore.readingBackgroundColor
+        ? settingsStore.readingBackgroundColor
+        : 'var(--bg-primary)',
+    color: !isDarkMode.value && settingsStore.readingBackgroundColor
+        ? 'var(--reading-text-color)'
+        : 'var(--text-primary)',
+    fontFamily: settingsStore.textFont,
+    fontSize: `${settingsStore.fontSize}%`,
+    lineHeight: settingsStore.linePadding.toString()
+}))
 
-const commentaryScrollerRef = ref<InstanceType<typeof DynamicScroller> | null>(null)
-const commentaryContentRef = ref<HTMLElement | null>(null)
-
-// Navigation flags
-const isNavigating = ref(false) // Flag to prevent scroll tracking during programmatic navigation
-const lastScrollTop = ref(0) // Track last scroll position to determine direction
-const scrollDirection = ref<'up' | 'down' | 'none'>('none') // Current scroll direction
-const pendingNavigationTargetBookId = ref<number | undefined>(undefined) // Track target book ID for navigation
-const isLoadingFromNavigation = ref(false) // Flag to indicate we're loading from next/previous line buttons
-
-// Track container width for responsive height estimation
-const containerWidth = ref(0)
-
-// Track if this component's container has focus
-const { focused: hasFocus } = useFocus(commentaryContentRef)
-
-// Track if Ctrl+A was pressed and selection is still active (for chained Ctrl+A -> Ctrl+C shortcut)
-const selectAllWasPressed = ref(false)
-
-// Reset selectAll flag when selection changes or user interacts
-useEventListener(commentaryContentRef, 'mousedown', () => {
-    selectAllWasPressed.value = false
+// Title that shows filter label (defaults to "קשרים" for "שונות")
+const commentaryTitle = computed(() => {
+    const option = availableFilterOptions.value.find(opt => opt.value === selectedConnectionTypeId.value)
+    if (!option) return 'קשרים'
+    if (option.label === 'שונות') return 'קשרים'
+    return option.label
 })
 
-useEventListener(document, 'selectionchange', () => {
-    // Only check if this component has focus
-    if (!hasFocus.value) return
-
-    // Check if selection is empty or changed
-    const selection = window.getSelection()
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-        selectAllWasPressed.value = false
-    }
-})
-
-// Keyboard shortcuts using useEventListener to support any keyboard layout
-useEventListener('keydown', (event: KeyboardEvent) => {
-    if (!hasFocus.value) return
-
-    const hasCtrlOrMeta = event.ctrlKey || event.metaKey
-
-    // Ctrl+F: Open search (use event.code for keyboard layout independence)
-    if (hasCtrlOrMeta && event.code === 'KeyF') {
-        event.preventDefault()
-        isSearchOpen.value = true
-        selectAllWasPressed.value = false
-    }
-
-    // Ctrl+A: Select all (use event.code for keyboard layout independence)
-    if (hasCtrlOrMeta && event.code === 'KeyA') {
-        event.preventDefault()
-        selectAllWasPressed.value = true
-        selectAllInContainer()
-    }
-
-    // Ctrl+Home: Scroll to first line
-    if (hasCtrlOrMeta && event.code === 'Home') {
-        event.preventDefault()
-        scrollToFirstLine()
-        selectAllWasPressed.value = false
-    }
-
-    // Ctrl+End: Scroll to last line
-    if (hasCtrlOrMeta && event.code === 'End') {
-        event.preventDefault()
-        scrollToLastLine()
-        selectAllWasPressed.value = false
-    }
-
-    // Reset flag on actions that would deselect in normal circumstances
-    // Arrow keys, typing, Escape, etc.
-    if (!hasCtrlOrMeta && !event.shiftKey) {
-        if (event.code.startsWith('Arrow') ||
-            event.code === 'Escape' ||
-            event.code === 'Home' ||
-            event.code === 'End' ||
-            event.code === 'PageUp' ||
-            event.code === 'PageDown' ||
-            (event.key.length === 1 && !event.ctrlKey && !event.metaKey)) {
-            selectAllWasPressed.value = false
-        }
-    }
-})
-
-// Virtual scroller configuration with dynamic sizing
+// Virtual scroller minimum item size
 const commentaryMinItemSize = computed(() => {
     const baseFontSize = 16
     const effectiveFontSize = (baseFontSize * settingsStore.fontSize) / 100
@@ -360,7 +287,20 @@ const commentaryMinItemSize = computed(() => {
     return Math.floor(effectiveLineHeight * 3)
 })
 
-// Virtual items for commentary scroller - FLATTEN TO INDIVIDUAL ITEMS
+// Search State - initialized after commentaryMinItemSize
+const searchUI = useVirtualizedSearch({
+    scrollerRef: commentaryScrollerRef,
+    itemSelector: '[data-index]',
+    itemIndexAttribute: 'data-index',
+    minItemSize: commentaryMinItemSize,
+    totalItems: computed(() => virtualCommentaryItems.value.length),
+    searchBarOffset: 50,
+    onScrollToItem: scrollToItem
+})
+
+const { searchQuery, matches, currentMatchIndex, totalMatches, currentMatch, highlightMatches, isSearchOpen, isNavigating: searchNavigating, handleSearch: handleSearchBase, handleSearchNext, handleSearchPrevious, openSearch, handleSearchClose } = searchUI
+
+// Flatten link groups into individual virtual items
 const virtualCommentaryItems = computed(() => {
     const items: Array<{
         id: string
@@ -373,7 +313,7 @@ const virtualCommentaryItems = computed(() => {
     }> = []
 
     processedLinkGroups.value.forEach((group, groupIndex) => {
-        // Add group header as separate item
+        // Add group header
         items.push({
             id: `group-header-${groupIndex}`,
             type: 'group-header',
@@ -383,7 +323,7 @@ const virtualCommentaryItems = computed(() => {
             targetLineIndex: group.targetLineIndex
         })
 
-        // Add each link as separate item
+        // Add each link
         group.links.forEach((link, linkIndex) => {
             items.push({
                 id: `group-${groupIndex}-link-${linkIndex}`,
@@ -397,23 +337,997 @@ const virtualCommentaryItems = computed(() => {
     return items
 })
 
-// Search state
-const searchRef = ref<InstanceType<typeof GenericSearch> | null>(null)
-const isSearchOpen = ref(false)
-const search = useContentSearch()
+// Process link groups with diacritics filtering and search highlighting
+const processedLinkGroups = computed(() => {
+    const activeTab = tabStore.activeTab
+    const diacriticsState = activeTab?.bookState?.diacriticsState
+    const query = searchQuery.value
 
-// Available filter options for the current line
-const availableFilterOptions = ref<Array<{ label: string; value: number }>>([])
+    // Build a map of virtual item indices for proper highlighting
+    let virtualItemIndex = 0
+    const itemIndexMap = new Map<string, number>()
 
-// Computed title that shows filter label, but defaults to "קשרים" for "שונות" (OTHER)
-const commentaryTitle = computed(() => {
-    const option = availableFilterOptions.value.find(opt => opt.value === selectedConnectionTypeId.value)
-    if (!option) return 'קשרים'
-    // If the label is "שונות" (OTHER), show "קשרים" instead
-    if (option.label === 'שונות') return 'קשרים'
-    return option.label
+    linkGroups.value.forEach((group, groupIndex) => {
+        // Map group header
+        itemIndexMap.set(`group-header-${groupIndex}`, virtualItemIndex++)
+
+        // Map each link
+        group.links.forEach((link, linkIndex) => {
+            itemIndexMap.set(`group-${groupIndex}-link-${linkIndex}`, virtualItemIndex++)
+        })
+    })
+
+    return linkGroups.value.map((group, groupIndex) => {
+        // Apply highlighting to group name if searching
+        let processedGroupName = group.groupName
+        if (query) {
+            const headerItemIndex = itemIndexMap.get(`group-header-${groupIndex}`)
+            if (headerItemIndex !== undefined) {
+                processedGroupName = highlightMatches(group.groupName, headerItemIndex)
+            }
+        }
+
+        return {
+            ...group,
+            groupName: processedGroupName,
+            links: group.links.map((link, linkIndex) => {
+                let html = link.html
+
+                // Apply diacritics filter
+                if (diacriticsState && diacriticsState > 0) {
+                    html = applyDiacriticsFilter(html, diacriticsState)
+                }
+
+                // Apply search highlighting
+                if (query) {
+                    const linkItemIndex = itemIndexMap.get(`group-${groupIndex}-link-${linkIndex}`)
+                    if (linkItemIndex !== undefined) {
+                        html = highlightMatches(html, linkItemIndex)
+                    }
+                }
+
+                return { ...link, html }
+            })
+        }
+    })
 })
 
+// Combobox options from link groups (use original names without highlighting)
+const groupOptions = computed<ComboboxOption[]>(() => {
+    return linkGroups.value.map((group, index) => ({
+        label: group.groupName,
+        value: index
+    }))
+})
+
+// Focus tracking
+const { focused: hasFocus } = useFocus(commentaryContentRef)
+
+// ============================================
+// LIFECYCLE HOOKS
+// ============================================
+onMounted(() => {
+    // Dark mode detection
+    updateDarkMode()
+    const darkModeObserver = new MutationObserver(updateDarkMode)
+    darkModeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class']
+    })
+
+    // Container width tracking for responsive height estimation
+    let resizeObserver: ResizeObserver | null = null
+    nextTick(() => {
+        if (commentaryContentRef.value) {
+            containerWidth.value = commentaryContentRef.value.clientWidth
+
+            resizeObserver = new ResizeObserver((entries) => {
+                for (const entry of entries) {
+                    containerWidth.value = entry.contentRect.width
+                    nextTick(() => {
+                        window.dispatchEvent(new Event('resize'))
+                        forceScrollerUpdate()
+                        setTimeout(() => {
+                            window.dispatchEvent(new Event('resize'))
+                            forceScrollerUpdate()
+                        }, 200)
+                    })
+                }
+            })
+            resizeObserver.observe(commentaryContentRef.value)
+        }
+    })
+
+    onUnmounted(() => {
+        darkModeObserver.disconnect()
+        if (resizeObserver) {
+            resizeObserver.disconnect()
+        }
+    })
+})
+
+// Scroll tracking cleanup
+let scrollTrackingCleanup: (() => void) | null = null
+onUnmounted(() => {
+    if (scrollTrackingCleanup) {
+        scrollTrackingCleanup()
+    }
+})
+
+// ============================================
+// WATCHERS
+// ============================================
+// Load commentary when props or TOC mode changes
+watch([() => props.bookId, () => props.selectedLineIndex, () => tabStore.activeTab?.bookState?.selectedTocEntryId],
+    async ([bookId, lineIndex]) => {
+        if (bookId !== undefined && lineIndex !== undefined) {
+            const targetBookId = pendingNavigationTargetBookId.value
+            pendingNavigationTargetBookId.value = undefined
+            await loadCommentaryLinks(bookId, lineIndex, targetBookId)
+        }
+    },
+    { immediate: true }
+)
+
+// Update combobox when currentGroupIndex changes
+watch(currentGroupIndex, (newIndex) => {
+    if (typeof comboboxSelectedValue.value === 'number' && comboboxSelectedValue.value !== newIndex) {
+        comboboxSelectedValue.value = newIndex
+    }
+
+    // Persist position to tab state
+    const activeTab = tabStore.activeTab
+    if (activeTab?.bookState && props.bookId !== undefined) {
+        const filterKey = selectedConnectionTypeId.value?.toString() || 'all'
+
+        if (!activeTab.bookState.commentaryPositionsByFilter) {
+            activeTab.bookState.commentaryPositionsByFilter = {}
+        }
+
+        const currentGroup = linkGroups.value[newIndex]
+        activeTab.bookState.commentaryPositionsByFilter[filterKey] = {
+            groupIndex: newIndex,
+            targetBookId: currentGroup?.targetBookId,
+            scrollPosition: commentaryScrollerRef.value?.$el?.scrollTop || 0
+        }
+    }
+})
+
+// Handle combobox selection changes
+watch(comboboxSelectedValue, (newValue) => {
+    if (typeof newValue === 'number') {
+        if (newValue !== currentGroupIndex.value) {
+            currentGroupIndex.value = newValue
+            scrollToGroup(newValue)
+        }
+    } else if (typeof newValue === 'string') {
+        const searchText = newValue.toLowerCase().trim()
+        if (searchText) {
+            const matchingGroup = linkGroups.value.find(group =>
+                group.groupName.toLowerCase().includes(searchText)
+            )
+            if (matchingGroup) {
+                const matchingIndex = linkGroups.value.indexOf(matchingGroup)
+                if (matchingIndex !== -1 && matchingIndex !== currentGroupIndex.value) {
+                    currentGroupIndex.value = matchingIndex
+                    scrollToGroup(matchingIndex)
+                }
+            }
+        }
+    }
+})
+
+// Refresh scroll tracking when link groups change
+watch(linkGroups, (newGroups) => {
+    if (currentGroupIndex.value >= newGroups.length) {
+        currentGroupIndex.value = 0
+    }
+
+    nextTick(() => {
+        setupScrollTracking()
+        forceScrollerUpdate()
+    })
+}, { flush: 'post' })
+
+// Force recalculation when virtual items change
+watch(() => virtualCommentaryItems.value.length, () => {
+    nextTick(() => {
+        forceScrollerUpdate()
+    })
+})
+
+// Force recalculation when font settings change
+watch([() => settingsStore.fontSize, () => settingsStore.linePadding], () => {
+    nextTick(() => {
+        forceScrollerUpdate()
+        setTimeout(() => {
+            forceScrollerUpdate()
+        }, 100)
+    })
+})
+
+// ============================================
+// EVENT LISTENERS
+// ============================================
+// Keyboard shortcuts (layout-independent using event.code)
+useEventListener('keydown', (event: KeyboardEvent) => {
+    if (!hasFocus.value) return
+
+    const hasCtrlOrMeta = event.ctrlKey || event.metaKey
+
+    if (hasCtrlOrMeta && event.code === 'KeyF') {
+        event.preventDefault()
+        isSearchOpen.value = true
+        selectAllWasPressed.value = false
+    }
+
+    if (hasCtrlOrMeta && event.code === 'KeyA') {
+        event.preventDefault()
+        selectAllWasPressed.value = true
+        selectAllInContainer()
+    }
+
+    if (hasCtrlOrMeta && event.code === 'Home') {
+        event.preventDefault()
+        scrollToFirstLine()
+        selectAllWasPressed.value = false
+    }
+
+    if (hasCtrlOrMeta && event.code === 'End') {
+        event.preventDefault()
+        scrollToLastLine()
+        selectAllWasPressed.value = false
+    }
+
+    // Reset selectAll flag on navigation/typing
+    if (!hasCtrlOrMeta && !event.shiftKey) {
+        if (event.code.startsWith('Arrow') ||
+            event.code === 'Escape' ||
+            event.code === 'Home' ||
+            event.code === 'End' ||
+            event.code === 'PageUp' ||
+            event.code === 'PageDown' ||
+            (event.key.length === 1 && !event.ctrlKey && !event.metaKey)) {
+            selectAllWasPressed.value = false
+        }
+    }
+})
+
+// Reset selectAll flag on mouse interaction
+useEventListener(commentaryContentRef, 'mousedown', () => {
+    selectAllWasPressed.value = false
+})
+
+// Reset selectAll flag when selection changes
+useEventListener(document, 'selectionchange', () => {
+    if (!hasFocus.value) return
+
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        selectAllWasPressed.value = false
+    }
+})
+
+// Copy event handler for full content copying
+useEventListener(commentaryContentRef, 'copy', handleCopy)
+
+// ============================================
+// CORE FUNCTIONS
+// ============================================
+/**
+ * Update dark mode state based on document class
+ */
+function updateDarkMode() {
+    isDarkMode.value = document.documentElement.classList.contains('dark')
+}
+
+/**
+ * FILTER CHANGE HANDLER
+ * Saves current position before switching filters (PERSISTENCE SYSTEM)
+ * Saves the TOP visible item, not the centered one
+ */
+async function handleFilterChange(connectionTypeId: number) {
+    const activeTab = tabStore.activeTab
+    if (activeTab?.bookState && props.bookId !== undefined) {
+        const currentFilterKey = selectedConnectionTypeId.value?.toString() || 'all'
+        if (!activeTab.bookState.commentaryPositionsByFilter) {
+            activeTab.bookState.commentaryPositionsByFilter = {}
+        }
+
+        // Get the specific item at the TOP of viewport (not center)
+        const topItem = getTopVisibleItem()
+        if (topItem) {
+            const topGroup = linkGroups.value[topItem.groupIndex]
+
+            activeTab.bookState.commentaryPositionsByFilter[currentFilterKey] = {
+                groupIndex: topItem.groupIndex,
+                targetBookId: topGroup?.targetBookId,
+                scrollPosition: commentaryScrollerRef.value?.$el?.scrollTop || 0,
+                topVisibleItemId: topItem.itemId
+            }
+        }
+    }
+
+    selectedConnectionTypeId.value = connectionTypeId
+
+    if (props.bookId !== undefined && props.selectedLineIndex !== undefined) {
+        await loadCommentaryLinks(props.bookId, props.selectedLineIndex, undefined)
+    }
+}
+
+/**
+ * LOAD COMMENTARY LINKS
+ * Main function to load and display commentary for a given line
+ */
+async function loadCommentaryLinks(bookId: number, lineIndex: number, scrollToTargetBookId?: number) {
+    isLoading.value = true
+    const wasNavigating = isLoadingFromNavigation.value
+
+    try {
+        const activeTab = tabStore.activeTab
+        const tocEntryId = activeTab?.bookState?.selectedTocEntryId
+
+        // Check if loading for TOC section (multiple lines) or single line
+        if (tocEntryId !== undefined) {
+            // Get all line IDs for this TOC entry
+            const lineIdResults = await dbService.getLineIdsByTocEntry(bookId, tocEntryId)
+            const lineIds = lineIdResults.map(r => r.lineId)
+
+            if (lineIds.length > 0) {
+                // Load merged links for all lines
+                const connectionTypeId = selectedConnectionTypeId.value
+                const linksPromises = lineIds.map(lineId =>
+                    dbService.getLinks(lineId, tabStore.activeTab?.id?.toString() || '', bookId, connectionTypeId)
+                )
+                const allLinksArrays = await Promise.all(linksPromises)
+                const allLinks = allLinksArrays.flat()
+
+                // Group links by title
+                const grouped = new Map<string, {
+                    links: Array<{ text: string; html: string }>,
+                    targetBookId?: number,
+                    targetLineIndex?: number
+                }>()
+
+                allLinks.forEach(link => {
+                    const groupName = link.title || 'אחר'
+                    if (!grouped.has(groupName)) {
+                        grouped.set(groupName, {
+                            links: [],
+                            targetBookId: link.targetBookId,
+                            targetLineIndex: link.lineIndex
+                        })
+                    }
+                    grouped.get(groupName)!.links.push({
+                        text: link.content || '',
+                        html: link.content || ''
+                    })
+                })
+
+                linkGroups.value = Array.from(grouped.entries()).map(([groupName, data]) => ({
+                    groupName,
+                    targetBookId: data.targetBookId,
+                    targetLineIndex: data.targetLineIndex,
+                    links: data.links
+                }))
+            } else {
+                linkGroups.value = []
+            }
+        } else {
+            // Regular single-line commentary loading
+            linkGroups.value = await commentaryService.loadCommentaryLinks(
+                bookId,
+                lineIndex,
+                tabStore.activeTab?.id?.toString() || '',
+                { connectionTypeId: selectedConnectionTypeId.value }
+            )
+        }
+
+        // Compute available filter options
+        if (tocEntryId !== undefined) {
+            if (props.book) {
+                availableFilterOptions.value = commentaryService.getAvailableFilterOptions(props.book)
+            }
+        } else {
+            computeAvailableFilterOptions(bookId, lineIndex).catch(() => { })
+        }
+
+        // RESTORATION LOGIC (PERSISTENCE SYSTEM)
+        const filterKey = selectedConnectionTypeId.value?.toString() || 'all'
+        const savedPosition = activeTab?.bookState?.commentaryPositionsByFilter?.[filterKey]
+
+        // Priority 1: Navigation with target book ID
+        if (scrollToTargetBookId !== undefined) {
+            const targetGroupIndex = linkGroups.value.findIndex(g => g.targetBookId === scrollToTargetBookId)
+            if (targetGroupIndex >= 0) {
+                currentGroupIndex.value = targetGroupIndex
+                comboboxSelectedValue.value = targetGroupIndex
+                setTimeout(() => {
+                    scrollToGroup(targetGroupIndex)
+                    setTimeout(() => {
+                        isLoadingFromNavigation.value = false
+                    }, 300)
+                }, 150)
+            } else {
+                isLoadingFromNavigation.value = false
+            }
+        }
+        // Priority 2: Navigation button without specific target
+        else if (wasNavigating) {
+            const currentTarget = linkGroups.value[currentGroupIndex.value]?.targetBookId
+            if (currentTarget !== undefined) {
+                // Keep current index, just scroll to it
+                comboboxSelectedValue.value = currentGroupIndex.value
+                setTimeout(() => {
+                    scrollToGroup(currentGroupIndex.value)
+                    setTimeout(() => {
+                        isLoadingFromNavigation.value = false
+                    }, 300)
+                }, 150)
+            } else {
+                isLoadingFromNavigation.value = false
+            }
+        }
+        // Priority 3: Restore saved position from filter/tab/session
+        else if (savedPosition) {
+            // Find commentary by targetBookId (more reliable across filters)
+            let restoredIndex = -1
+
+            if (savedPosition.targetBookId !== undefined) {
+                restoredIndex = linkGroups.value.findIndex(g => g.targetBookId === savedPosition.targetBookId)
+            }
+
+            // Fallback to groupIndex if targetBookId not found
+            if (restoredIndex === -1 && savedPosition.groupIndex < linkGroups.value.length) {
+                restoredIndex = savedPosition.groupIndex
+            }
+
+            if (restoredIndex >= 0) {
+                // Set combobox immediately so it shows the correct commentary
+                currentGroupIndex.value = restoredIndex
+                comboboxSelectedValue.value = restoredIndex
+
+                // Scroll to specific item that was at TOP of viewport
+                setTimeout(() => {
+                    if (savedPosition.topVisibleItemId) {
+                        const itemIndex = virtualCommentaryItems.value.findIndex(
+                            item => item.id === savedPosition.topVisibleItemId
+                        )
+
+                        if (itemIndex !== -1) {
+                            scrollToSpecificItem(itemIndex)
+                        } else {
+                            scrollToGroup(restoredIndex)
+                        }
+                    } else {
+                        scrollToGroup(restoredIndex)
+                    }
+                }, 150)
+            }
+        }
+        // Priority 4: Default commentator or first group
+        else {
+            let defaultGroupIndex = 0
+            if (props.book?.defaultCommentatorBookId) {
+                const defaultIndex = linkGroups.value.findIndex(
+                    g => g.targetBookId === props.book!.defaultCommentatorBookId
+                )
+                if (defaultIndex >= 0) {
+                    defaultGroupIndex = defaultIndex
+                }
+            }
+
+            // Set the combobox to the default group
+            currentGroupIndex.value = defaultGroupIndex
+            comboboxSelectedValue.value = defaultGroupIndex
+
+            if (defaultGroupIndex > 0) {
+                setTimeout(() => {
+                    scrollToGroup(defaultGroupIndex)
+                }, 150)
+            }
+        }
+
+        setTimeout(() => {
+            setupScrollTracking()
+            forceScrollerUpdate()
+        }, 200)
+
+    } catch (error) {
+        console.error('❌ Failed to load commentary links:', error)
+        linkGroups.value = []
+        isLoadingFromNavigation.value = false
+    } finally {
+        isLoading.value = false
+    }
+}
+
+// ============================================
+// NAVIGATION FUNCTIONS
+// ============================================
+/**
+ * Navigate to previous line with same commentary if possible
+ */
+async function previousLine() {
+    const idx = props.selectedLineIndex
+    if (idx === undefined) return
+
+    const currentTarget = linkGroups.value[currentGroupIndex.value]?.targetBookId
+
+    if (currentTarget !== undefined) {
+        const found = await findLineWithTarget(idx, -1, currentTarget, 100)
+        if (found !== null) {
+            isLoadingFromNavigation.value = true
+            pendingNavigationTargetBookId.value = currentTarget
+            emit('update:selectedLineIndex', found)
+            emit('navigate-line', found)
+            updateTabLineIndex(found)
+            return
+        }
+    }
+
+    // Fallback: just go to previous line
+    isLoadingFromNavigation.value = true
+    const newIndex = Math.max(0, idx - 1)
+    emit('update:selectedLineIndex', newIndex)
+    emit('navigate-line', newIndex)
+    updateTabLineIndex(newIndex)
+}
+
+/**
+ * Navigate to next line with same commentary if possible
+ */
+async function nextLine() {
+    const idx = props.selectedLineIndex
+    if (idx === undefined) return
+
+    const currentTarget = linkGroups.value[currentGroupIndex.value]?.targetBookId
+
+    if (currentTarget !== undefined) {
+        const found = await findLineWithTarget(idx, 1, currentTarget, 100)
+        if (found !== null) {
+            isLoadingFromNavigation.value = true
+            pendingNavigationTargetBookId.value = currentTarget
+            emit('update:selectedLineIndex', found)
+            emit('navigate-line', found)
+            updateTabLineIndex(found)
+            return
+        }
+    }
+
+    // Fallback: just go to next line
+    isLoadingFromNavigation.value = true
+    const newIndex = idx + 1
+    emit('update:selectedLineIndex', newIndex)
+    emit('navigate-line', newIndex)
+    updateTabLineIndex(newIndex)
+}
+
+/**
+ * Navigate to previous commentary group
+ */
+function previousGroup() {
+    if (currentGroupIndex.value > 0) {
+        const newIndex = currentGroupIndex.value - 1
+        currentGroupIndex.value = newIndex
+        scrollToGroup(newIndex)
+    }
+}
+
+/**
+ * Navigate to next commentary group
+ */
+function nextGroup() {
+    if (currentGroupIndex.value < processedLinkGroups.value.length - 1) {
+        const newIndex = currentGroupIndex.value + 1
+        currentGroupIndex.value = newIndex
+        scrollToGroup(newIndex)
+    }
+}
+
+/**
+ * Helper: Update tab line index
+ */
+function updateTabLineIndex(lineIndex: number) {
+    try {
+        const activeTab = tabStore.activeTab
+        if (activeTab?.bookState) {
+            activeTab.bookState.selectedLineIndex = lineIndex
+        }
+    } catch (e) {
+        console.warn('[Commentary] Failed to update selectedLineIndex', e)
+    }
+}
+
+/**
+ * Helper: Find line with target commentary
+ */
+async function findLineWithTarget(
+    startIndex: number,
+    direction: 1 | -1,
+    targetBookId: number | undefined,
+    maxRange = 50
+): Promise<number | null> {
+    if (targetBookId === undefined || targetBookId === null) return null
+    if (props.bookId === undefined) return null
+
+    const tabId = tabStore.activeTab?.id?.toString() || ''
+
+    for (let step = 1; step <= maxRange; step++) {
+        const candidate = startIndex + step * direction
+        if (candidate < 0) break
+
+        try {
+            const groups = await commentaryService.loadCommentaryLinks(
+                props.bookId,
+                candidate,
+                tabId,
+                { connectionTypeId: selectedConnectionTypeId.value }
+            )
+            if (groups && groups.length > 0) {
+                const hasTarget = groups.some(g => g.targetBookId === targetBookId)
+                if (hasTarget) return candidate
+            }
+        } catch (e) {
+            // Continue searching
+        }
+    }
+
+    return null
+}
+
+// ============================================
+// SCROLL FUNCTIONS
+// ============================================
+/**
+ * Scroll to a specific commentary group header
+ */
+function scrollToGroup(index: number) {
+    if (!commentaryScrollerRef.value) return
+
+    const groupHeaderId = `group-header-${index}`
+    const itemIndex = virtualCommentaryItems.value.findIndex(item => item.id === groupHeaderId)
+
+    if (itemIndex !== -1) {
+        isNavigating.value = true
+
+        const scrollerEl = commentaryScrollerRef.value.$el
+        if (scrollerEl) {
+            scrollerEl.style.overflow = 'hidden'
+            scrollerEl.style.pointerEvents = 'none'
+        }
+
+        commentaryScrollerRef.value.scrollToItem(itemIndex)
+
+        setTimeout(() => {
+            if (commentaryScrollerRef.value) {
+                commentaryScrollerRef.value.scrollToItem(itemIndex)
+
+                setTimeout(() => {
+                    if (scrollerEl) {
+                        scrollerEl.style.overflow = ''
+                        scrollerEl.style.pointerEvents = ''
+                    }
+                    setTimeout(() => {
+                        isNavigating.value = false
+                    }, 300) // Longer delay for scroll tracking to settle
+                }, 10)
+            }
+        }, 50)
+    }
+}
+
+/**
+ * Scroll to a specific virtual item by index
+ */
+function scrollToSpecificItem(itemIndex: number) {
+    if (!commentaryScrollerRef.value) return
+    if (itemIndex < 0 || itemIndex >= virtualCommentaryItems.value.length) return
+
+    isNavigating.value = true
+
+    const scrollerEl = commentaryScrollerRef.value.$el
+    if (scrollerEl) {
+        scrollerEl.style.overflow = 'hidden'
+        scrollerEl.style.pointerEvents = 'none'
+    }
+
+    commentaryScrollerRef.value.scrollToItem(itemIndex)
+
+    setTimeout(() => {
+        if (commentaryScrollerRef.value) {
+            commentaryScrollerRef.value.scrollToItem(itemIndex)
+
+            setTimeout(() => {
+                if (scrollerEl) {
+                    scrollerEl.style.overflow = ''
+                    scrollerEl.style.pointerEvents = ''
+                }
+                setTimeout(() => {
+                    isNavigating.value = false
+                }, 300) // Longer delay for scroll tracking to settle
+            }, 10)
+        }
+    }, 50)
+}
+
+/**
+ * Scroll to first line (Ctrl+Home)
+ */
+function scrollToFirstLine() {
+    if (virtualCommentaryItems.value.length === 0) return
+    currentGroupIndex.value = 0
+    scrollToGroup(0)
+}
+
+/**
+ * Scroll to last line (Ctrl+End)
+ */
+function scrollToLastLine() {
+    if (virtualCommentaryItems.value.length === 0) return
+    const lastIndex = virtualCommentaryItems.value.length - 1
+    currentGroupIndex.value = lastIndex
+
+    if (!commentaryScrollerRef.value) return
+
+    const groupItemId = `group-${lastIndex}`
+    const itemIndex = virtualCommentaryItems.value.findIndex(item => item.id === groupItemId)
+
+    if (itemIndex !== -1) {
+        isNavigating.value = true
+
+        const scrollerEl = commentaryScrollerRef.value.$el
+        if (scrollerEl) {
+            scrollerEl.style.overflow = 'hidden'
+            scrollerEl.style.pointerEvents = 'none'
+        }
+
+        commentaryScrollerRef.value.scrollToItem(itemIndex)
+
+        setTimeout(() => {
+            if (commentaryScrollerRef.value) {
+                commentaryScrollerRef.value.scrollToItem(itemIndex)
+
+                setTimeout(() => {
+                    if (scrollerEl) {
+                        scrollerEl.scrollTop = scrollerEl.scrollHeight
+                        scrollerEl.style.overflow = ''
+                        scrollerEl.style.pointerEvents = ''
+                    }
+                    setTimeout(() => {
+                        isNavigating.value = false
+                    }, 300) // Longer delay for scroll tracking to settle
+                }, 10)
+            }
+        }, 50)
+    }
+}
+
+/**
+ * Force virtual scroller to recalculate item sizes
+ */
+function forceScrollerUpdate() {
+    if (!commentaryScrollerRef.value) return
+
+    nextTick(() => {
+        const scroller = commentaryScrollerRef.value as any
+        if (scroller && typeof scroller.forceUpdate === 'function') {
+            scroller.forceUpdate()
+        }
+
+        setTimeout(() => {
+            window.dispatchEvent(new Event('resize'))
+
+            setTimeout(() => {
+                if (scroller && typeof scroller.forceUpdate === 'function') {
+                    scroller.forceUpdate()
+                }
+                window.dispatchEvent(new Event('resize'))
+            }, 300)
+        }, 100)
+    })
+}
+
+/**
+ * Handle scroll events (debounced updates)
+ */
+let scrollUpdateDebounce: number | undefined
+function handleScrollerScroll() {
+    if (scrollUpdateDebounce) {
+        clearTimeout(scrollUpdateDebounce)
+    }
+
+    const debounceTime = containerWidth.value < 250 ? 200 : (containerWidth.value < 400 ? 300 : 500)
+
+    scrollUpdateDebounce = window.setTimeout(() => {
+        const scroller = commentaryScrollerRef.value as any
+        if (scroller && typeof scroller.forceUpdate === 'function') {
+            scroller.forceUpdate()
+        }
+    }, debounceTime)
+}
+
+// ============================================
+// SCROLL TRACKING SYSTEM
+// Tracks which commentary is at CENTER of viewport
+// Updates combobox based on centered content
+// ============================================
+/**
+ * Get the top visible item (for PERSISTENCE system)
+ * Returns the specific item at the TOP of viewport
+ */
+function getTopVisibleItem(): { groupIndex: number; itemId: string } | null {
+    if (!commentaryScrollerRef.value?.$el) return null
+
+    const scrollerEl = commentaryScrollerRef.value.$el
+    const items = scrollerEl.querySelectorAll('[data-commentary-item-observer]')
+    if (items.length === 0) return null
+
+    const scrollerRect = scrollerEl.getBoundingClientRect()
+    const scrollerTop = scrollerRect.top
+
+    let topItem: { groupIndex: number; itemId: string } | null = null
+    let minDistance = Infinity
+
+    items.forEach((item: Element) => {
+        const rect = item.getBoundingClientRect()
+        const itemId = item.getAttribute('data-commentary-item-observer')
+        const groupIndexAttr = item.getAttribute('data-group-index')
+
+        if (!itemId || !groupIndexAttr) return
+
+        const groupIndex = parseInt(groupIndexAttr)
+        if (groupIndex < 0) return
+
+        if (rect.bottom > scrollerTop) {
+            const distance = Math.abs(rect.top - scrollerTop)
+            if (distance < minDistance) {
+                minDistance = distance
+                topItem = { groupIndex, itemId }
+            }
+        }
+    })
+
+    return topItem
+}
+
+/**
+ * Get the group index at top (fallback helper)
+ */
+function getTopVisibleGroupIndex(): number {
+    const topItem = getTopVisibleItem()
+    return topItem?.groupIndex ?? currentGroupIndex.value
+}
+
+/**
+ * Setup scroll tracking system
+ * Updates currentGroupIndex based on CENTER of viewport
+ */
+function setupScrollTracking() {
+    if (!commentaryScrollerRef.value?.$el) return
+
+    if (scrollTrackingCleanup) {
+        scrollTrackingCleanup()
+    }
+
+    const scrollerEl = commentaryScrollerRef.value.$el
+    let scrollTimeout: number | undefined
+
+    const updateCurrentSection = () => {
+        if (isNavigating.value || isLoadingFromNavigation.value) return
+
+        const items = scrollerEl.querySelectorAll('[data-group-index]')
+        if (items.length === 0) return
+
+        const scrollerRect = scrollerEl.getBoundingClientRect()
+        const scrollerTop = scrollerRect.top
+        const scrollerBottom = scrollerRect.bottom
+        const scrollerCenter = scrollerTop + (scrollerBottom - scrollerTop) / 2
+
+        // Find group closest to CENTER of viewport
+        let targetSection: number | undefined = undefined
+        let bestDistance = Infinity
+
+        items.forEach((item: Element) => {
+            const rect = item.getBoundingClientRect()
+            const sectionIndex = parseInt(item.getAttribute('data-group-index') || '-1')
+            if (sectionIndex < 0) return
+
+            const isVisible = rect.bottom > scrollerTop && rect.top < scrollerBottom
+
+            if (isVisible) {
+                const itemCenter = rect.top + rect.height / 2
+                const distance = Math.abs(itemCenter - scrollerCenter)
+
+                if (distance < bestDistance) {
+                    bestDistance = distance
+                    targetSection = sectionIndex
+                }
+            }
+        })
+
+        if (targetSection !== undefined && targetSection >= 0 && targetSection !== currentGroupIndex.value) {
+            currentGroupIndex.value = targetSection
+        }
+    }
+
+    const handleScroll = () => {
+        if (isNavigating.value || isLoadingFromNavigation.value) return
+
+        const currentScrollTop = scrollerEl.scrollTop
+
+        // Update scroll direction
+        if (currentScrollTop > lastScrollTop.value) {
+            scrollDirection.value = 'down'
+        } else if (currentScrollTop < lastScrollTop.value) {
+            scrollDirection.value = 'up'
+        }
+        lastScrollTop.value = currentScrollTop
+
+        // Debounced section detection
+        clearTimeout(scrollTimeout)
+        scrollTimeout = window.setTimeout(() => {
+            updateCurrentSection()
+
+            // Update scroll position in persistence
+            const activeTab = tabStore.activeTab
+            if (activeTab?.bookState && props.bookId !== undefined) {
+                const filterKey = selectedConnectionTypeId.value?.toString() || 'all'
+                if (activeTab.bookState.commentaryPositionsByFilter?.[filterKey]) {
+                    activeTab.bookState.commentaryPositionsByFilter[filterKey].scrollPosition = currentScrollTop
+                }
+            }
+        }, 16) // ~1 frame at 60fps
+    }
+
+    scrollerEl.addEventListener('scroll', handleScroll, { passive: true })
+
+    // Only run initial update if we haven't already set a position
+    // (e.g., during restoration, navigation, or default commentary loading)
+    // This prevents overriding the manually set combobox value
+    const hasInitialPosition = currentGroupIndex.value !== 0 || comboboxSelectedValue.value !== 0
+    if (!hasInitialPosition) {
+        setTimeout(() => {
+            updateCurrentSection()
+        }, 100)
+    }
+
+    scrollTrackingCleanup = () => {
+        scrollerEl.removeEventListener('scroll', handleScroll)
+        clearTimeout(scrollTimeout)
+    }
+}
+
+// ============================================
+// SEARCH FUNCTIONS
+// ============================================
+/**
+ * Handle search query - wrapper for unified search UI
+ */
+function handleSearch(query: string) {
+    handleSearchBase(
+        virtualCommentaryItems.value,
+        query,
+        (item) => item.type === 'group-header' ? item.groupName : item.html
+    )
+}
+
+/**
+ * Scroll to a specific item by index (callback for search composable)
+ * CommentaryView doesn't need to prioritize loading, so this is a no-op
+ */
+async function scrollToItem(itemIndex: number) {
+    // No-op: CommentaryView doesn't need to prioritize loading
+    // The composable handles all scrolling logic
+    await nextTick()
+}
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+/**
+ * Compute available filter options for current line
+ */
 async function computeAvailableFilterOptions(bookId: number, lineIndex: number) {
     availableFilterOptions.value = []
     if (!props.book) return
@@ -423,309 +1337,36 @@ async function computeAvailableFilterOptions(bookId: number, lineIndex: number) 
 
     const tabId = tabStore.activeTab?.id?.toString() || ''
     const results: Array<{ label: string; value: number }> = []
+
     for (const opt of baseOptions) {
         try {
-            const groups = await commentaryService.loadCommentaryLinks(bookId, lineIndex, tabId, { connectionTypeId: opt.value })
+            const groups = await commentaryService.loadCommentaryLinks(
+                bookId,
+                lineIndex,
+                tabId,
+                { connectionTypeId: opt.value }
+            )
             if (groups && groups.length > 0) {
                 results.push({ label: opt.label, value: opt.value })
             }
         } catch (e) {
-            // ignore errors for individual filters
+            // Ignore errors for individual filters
         }
     }
 
     availableFilterOptions.value = results
 }
 
-function openSearch() {
-    isSearchOpen.value = true
-}
-
-async function findLineWithTarget(startIndex: number, direction: 1 | -1, targetBookId: number | undefined, maxRange = 50): Promise<number | null> {
-    if (targetBookId === undefined || targetBookId === null) return null
-    if (props.bookId === undefined) return null
-    const tabId = tabStore.activeTab?.id?.toString() || ''
-
-    for (let step = 1; step <= maxRange; step++) {
-        const candidate = startIndex + step * direction
-        if (candidate < 0) break
-        try {
-            const groups = await commentaryService.loadCommentaryLinks(props.bookId, candidate, tabId, { connectionTypeId: selectedConnectionTypeId.value })
-            if (groups && groups.length > 0) {
-                const hasTarget = groups.some(g => g.targetBookId === targetBookId)
-                if (hasTarget) return candidate
-            }
-        } catch (e) {
-            // ignore and continue
-        }
-    }
-
-    return null
-}
-
-async function previousLine() {
-    const idx = props.selectedLineIndex
-    if (idx === undefined) return
-
-    const currentTarget = linkGroups.value[currentGroupIndex.value]?.targetBookId
-
-    // If we have a target commentary, try to find the previous line with it
-    if (currentTarget !== undefined) {
-        const found = await findLineWithTarget(idx, -1, currentTarget, 100)
-        if (found !== null) {
-            isLoadingFromNavigation.value = true // Set flag before navigation
-            pendingNavigationTargetBookId.value = currentTarget // Set target for next load
-            emit('update:selectedLineIndex', found)
-            emit('navigate-line', found)
-            try {
-                const activeTab = tabStore.activeTab
-                if (activeTab?.bookState) {
-                    activeTab.bookState.selectedLineIndex = found
-                }
-            } catch (e) {
-                console.warn('[Commentary] failed to write selectedLineIndex to tabState', e)
-            }
-            return
-        }
-    }
-
-    // Fallback: just go to previous line
-    isLoadingFromNavigation.value = true // Set flag even for fallback
-    const newIndex = Math.max(0, idx - 1)
-    emit('update:selectedLineIndex', newIndex)
-    emit('navigate-line', newIndex)
-    try {
-        const activeTab = tabStore.activeTab
-        if (activeTab?.bookState) {
-            activeTab.bookState.selectedLineIndex = newIndex
-        }
-    } catch (e) {
-        console.warn('[Commentary] failed to write selectedLineIndex to tabState', e)
-    }
-}
-
-async function nextLine() {
-    const idx = props.selectedLineIndex
-    if (idx === undefined) return
-
-    const currentTarget = linkGroups.value[currentGroupIndex.value]?.targetBookId
-
-    // If we have a target commentary, try to find the next line with it
-    if (currentTarget !== undefined) {
-        const found = await findLineWithTarget(idx, 1, currentTarget, 100)
-        if (found !== null) {
-            isLoadingFromNavigation.value = true // Set flag before navigation
-            pendingNavigationTargetBookId.value = currentTarget // Set target for next load
-            emit('update:selectedLineIndex', found)
-            emit('navigate-line', found)
-            try {
-                const activeTab = tabStore.activeTab
-                if (activeTab?.bookState) {
-                    activeTab.bookState.selectedLineIndex = found
-                }
-            } catch (e) {
-                console.warn('[Commentary] failed to write selectedLineIndex to tabState', e)
-            }
-            return
-        }
-    }
-
-    // Fallback: just go to next line
-    isLoadingFromNavigation.value = true // Set flag even for fallback
-    const newIndex = idx + 1
-    emit('update:selectedLineIndex', newIndex)
-    emit('navigate-line', newIndex)
-    try {
-        const activeTab = tabStore.activeTab
-        if (activeTab?.bookState) {
-            activeTab.bookState.selectedLineIndex = newIndex
-        }
-    } catch (e) {
-        console.warn('[Commentary] failed to write selectedLineIndex to tabState', e)
-    }
-}
-
-// Handle keydown for Space key prevention (keep in template handler)
-function handleKeyDown(e: KeyboardEvent) {
-    // Prevent spacebar from scrolling unless in search input
-    if (e.key === ' ' && e.target instanceof HTMLElement && e.target.tagName !== 'INPUT') {
-        e.preventDefault()
-        return
-    }
-}
-
-function handleSearch(query: string) {
-    const items: Array<{ index: number; content: string }> = []
-    virtualCommentaryItems.value.forEach((item, index) => {
-        items.push({
-            index: index,
-            content: item.groupName
-        })
-
-        item.links.forEach(link => {
-            items.push({
-                index: index,
-                content: link.html
-            })
-        })
-    })
-
-    // Get current scroll position to find closest match
-    let currentItemIndex: number | undefined
-
-    if (commentaryScrollerRef.value?.$el) {
-        const scrollerEl = commentaryScrollerRef.value.$el
-        const scrollTop = scrollerEl.scrollTop || 0
-        // Estimate current item from scroll position
-        currentItemIndex = Math.floor(scrollTop / commentaryMinItemSize.value)
-
-        // Clamp to valid range
-        if (currentItemIndex < 0) currentItemIndex = 0
-        if (currentItemIndex >= virtualCommentaryItems.value.length) {
-            currentItemIndex = virtualCommentaryItems.value.length - 1
-        }
-    }
-
-    // Pass current item index to find closest match
-    search.searchInItems(items, query, currentItemIndex)
-
-    // Scroll to the selected match
-    if (search.currentMatch.value) {
-        scrollToCurrentMatch()
-    }
-}
-
-function handleSearchNext() {
-    search.nextMatch()
-    scrollToCurrentMatch()
-}
-
-function handleSearchPrevious() {
-    search.previousMatch()
-    scrollToCurrentMatch()
-}
-
-function handleSearchClose() {
-    isSearchOpen.value = false
-}
-
-function scrollToCurrentMatch() {
-    const match = search.currentMatch.value
-    if (match && commentaryScrollerRef.value) {
-        // Set flag to prevent scroll tracking interference
-        isNavigating.value = true
-
-        const scrollerEl = commentaryScrollerRef.value.$el
-        if (scrollerEl) {
-            // Temporarily disable scroll events and hide overflow to prevent flickering
-            scrollerEl.style.overflow = 'hidden'
-            scrollerEl.style.pointerEvents = 'none'
-        }
-
-        // First call to scrollToItem
-        commentaryScrollerRef.value.scrollToItem(match.itemIndex)
-
-        // Wait a bit and call it again (the hack for vue3-virtual-scroller)
-        setTimeout(() => {
-            if (commentaryScrollerRef.value) {
-                commentaryScrollerRef.value.scrollToItem(match.itemIndex)
-
-                // Re-enable scrolling after the second call
-                setTimeout(() => {
-                    if (scrollerEl) {
-                        scrollerEl.style.overflow = ''
-                        scrollerEl.style.pointerEvents = ''
-                    }
-
-                    // Now find and scroll to the actual mark element
-                    setTimeout(() => {
-                        const currentMark = scrollerEl?.querySelector('mark.current')
-                        if (currentMark) {
-                            currentMark.scrollIntoView({ behavior: 'auto', block: 'center' })
-                        }
-
-                        // Re-enable scroll tracking after a longer delay to prevent jump-back
-                        setTimeout(() => {
-                            isNavigating.value = false
-                        }, 500)
-                    }, 50)
-                }, 10)
-            }
-        }, 50)
-    }
-}
-
-// Update current mark styling without triggering full re-render
-function updateCurrentMarkStyling() {
-    const scrollerEl = commentaryScrollerRef.value?.$el
-    if (!scrollerEl) return
-
-    const currentMatch = search.currentMatch.value
-    if (!currentMatch) return
-
-    // Remove 'current' class from all marks
-    const allMarks = scrollerEl.querySelectorAll('mark.current')
-    allMarks.forEach((mark: Element) => mark.classList.remove('current'))
-
-    // Find the commentary item element
-    const itemEl = scrollerEl.querySelector(`[data-commentary-item-observer]`)
-    if (!itemEl) return
-
-    // Find all marks in the visible items and add 'current' to the right one
-    const allVisibleMarks = scrollerEl.querySelectorAll('mark')
-    let markCounter = 0
-
-    // Count through marks to find the one matching currentMatch
-    for (const mark of allVisibleMarks) {
-        if (markCounter === currentMatch.itemIndex) {
-            mark.classList.add('current')
-            break
-        }
-        markCounter++
-    }
-}
-
-// Computed property for processed commentary content with diacritics filtering
-const processedLinkGroups = computed(() => {
-    const activeTab = tabStore.activeTab
-    const diacriticsState = activeTab?.bookState?.diacriticsState
-    const query = search.searchQuery.value
-    const currentMatch = search.currentMatch.value
-
-    return linkGroups.value.map((group, groupIndex) => ({
-        ...group,
-        links: group.links.map((link, linkIndex) => {
-            let html = link.html
-
-            if (diacriticsState && diacriticsState > 0) {
-                html = applyDiacriticsFilter(html, diacriticsState)
-            }
-
-            if (query) {
-                const virtualItemIndex = groupIndex
-                const currentOccurrence = currentMatch?.itemIndex === virtualItemIndex ? currentMatch.occurrence : -1
-                html = search.highlightMatches(html, query, currentOccurrence)
-            }
-
-            return {
-                ...link,
-                html
-            }
-        })
-    }))
-})
-
+/**
+ * Apply diacritics filter to HTML content
+ */
 function applyDiacriticsFilter(htmlContent: string, state: number): string {
     if (!htmlContent || state === 0) return htmlContent
 
     const tempDiv = document.createElement('div')
     tempDiv.innerHTML = htmlContent
 
-    const walker = document.createTreeWalker(
-        tempDiv,
-        NodeFilter.SHOW_TEXT,
-        null
-    )
+    const walker = document.createTreeWalker(tempDiv, NodeFilter.SHOW_TEXT, null)
 
     const textNodes: Text[] = []
     let node: Node | null
@@ -753,257 +1394,27 @@ function applyDiacriticsFilter(htmlContent: string, state: number): string {
     return tempDiv.innerHTML
 }
 
-// Load commentary when props change or when TOC mode changes
-watch([() => props.bookId, () => props.selectedLineIndex, () => tabStore.activeTab?.bookState?.selectedTocEntryId], async ([bookId, lineIndex]) => {
-    if (bookId !== undefined && lineIndex !== undefined) {
-        const targetBookId = pendingNavigationTargetBookId.value
-        pendingNavigationTargetBookId.value = undefined // Clear after use
-        await loadCommentaryLinks(bookId, lineIndex, targetBookId)
-    }
-}, { immediate: true })
-
-// Handle connection type filter change
-const handleFilterChange = async (connectionTypeId: number) => {
-    selectedConnectionTypeId.value = connectionTypeId
-
-    if (props.bookId !== undefined && props.selectedLineIndex !== undefined) {
-        await loadCommentaryLinks(props.bookId, props.selectedLineIndex, undefined)
-    }
-}
-
-async function loadCommentaryLinks(bookId: number, lineIndex: number, scrollToTargetBookId?: number) {
-    isLoading.value = true
-    const wasNavigating = isLoadingFromNavigation.value // Capture the flag
-
-    try {
-        const activeTab = tabStore.activeTab
-        const tocEntryId = activeTab?.bookState?.selectedTocEntryId
-
-        console.log(`🔄 Loading commentary - bookId: ${bookId}, lineIndex: ${lineIndex}, tocEntryId: ${tocEntryId}`)
-
-        // Check if we should load links for a TOC section (multiple lines) or single line
-        if (tocEntryId !== undefined) {
-            console.log(`📖 Loading commentary for TOC section (ID: ${tocEntryId})`)
-
-            // Get all line IDs for this TOC entry
-            const lineIdResults = await dbService.getLineIdsByTocEntry(bookId, tocEntryId)
-            const lineIds = lineIdResults.map(r => r.lineId)
-            console.log(`📚 Found ${lineIds.length} lines for TOC entry ${tocEntryId}:`, lineIds)
-
-            if (lineIds.length > 0) {
-                // Load merged links directly using the line IDs
-                const connectionTypeId = selectedConnectionTypeId.value
-                console.log(`🔗 Loading links with connectionTypeId: ${connectionTypeId}`)
-
-                const linksPromises = lineIds.map(lineId => {
-                    console.log(`  📎 Calling getLinks for lineId: ${lineId}, tabId: ${tabStore.activeTab?.id?.toString()}, bookId: ${bookId}, connectionTypeId: ${connectionTypeId}`)
-                    return dbService.getLinks(lineId, tabStore.activeTab?.id?.toString() || '', bookId, connectionTypeId)
-                })
-                const allLinksArrays = await Promise.all(linksPromises)
-                console.log(`  📦 Received ${allLinksArrays.length} link arrays`)
-                allLinksArrays.forEach((arr, idx) => {
-                    console.log(`    Array ${idx}: ${Array.isArray(arr) ? arr.length : 'not an array'} links`)
-                })
-                const allLinks = allLinksArrays.flat()
-                console.log(`✅ Loaded ${allLinks.length} total links from ${lineIds.length} lines`)
-
-                // Group links by title and merge
-                const grouped = new Map<string, {
-                    links: Array<{ text: string; html: string }>,
-                    targetBookId?: number,
-                    targetLineIndex?: number
-                }>()
-
-                allLinks.forEach(link => {
-                    const groupName = link.title || 'אחר'
-                    if (!grouped.has(groupName)) {
-                        grouped.set(groupName, {
-                            links: [],
-                            targetBookId: link.targetBookId,
-                            targetLineIndex: link.lineIndex
-                        })
-                    }
-                    grouped.get(groupName)!.links.push({
-                        text: link.content || '',
-                        html: link.content || ''
-                    })
-                })
-
-                // Convert to array format
-                linkGroups.value = Array.from(grouped.entries()).map(([groupName, data]) => ({
-                    groupName,
-                    targetBookId: data.targetBookId,
-                    targetLineIndex: data.targetLineIndex,
-                    links: data.links
-                }))
-            } else {
-                linkGroups.value = []
-            }
-        } else {
-            // Regular single-line commentary loading
-            linkGroups.value = await commentaryService.loadCommentaryLinks(
-                bookId,
-                lineIndex,
-                tabStore.activeTab?.id?.toString() || '',
-                { connectionTypeId: selectedConnectionTypeId.value }
-            )
-        }
-
-        // Compute available filter options
-        // For TOC mode, use book-level filters since checking each line would be expensive
-        if (tocEntryId !== undefined) {
-            if (props.book) {
-                availableFilterOptions.value = commentaryService.getAvailableFilterOptions(props.book)
-            }
-        } else {
-            // For single line, check which filters actually have results
-            computeAvailableFilterOptions(bookId, lineIndex).catch(() => { })
-        }
-
-        // Restore saved position for this filter, or default to 0
-        const filterKey = selectedConnectionTypeId.value?.toString() || 'all'
-        const savedPosition = activeTab?.bookState?.commentaryPositionsByFilter?.[filterKey]
-
-        // If we have a target book ID to scroll to (from navigation), find and scroll to it
-        if (scrollToTargetBookId !== undefined) {
-            const targetGroupIndex = linkGroups.value.findIndex(g => g.targetBookId === scrollToTargetBookId)
-            if (targetGroupIndex >= 0) {
-                currentGroupIndex.value = targetGroupIndex
-                comboboxSelectedValue.value = targetGroupIndex
-
-                setTimeout(() => {
-                    scrollToGroup(targetGroupIndex)
-                    // Clear the navigation flag after scrolling completes
-                    setTimeout(() => {
-                        isLoadingFromNavigation.value = false
-                    }, 300)
-                }, 150)
-            } else {
-                // Target not found, use default
-                currentGroupIndex.value = 0
-                comboboxSelectedValue.value = 0
-                isLoadingFromNavigation.value = false
-            }
-        } else if (wasNavigating) {
-            // Navigation button was used but no specific target - keep current selection if possible
-            const currentTarget = linkGroups.value[currentGroupIndex.value]?.targetBookId
-            if (currentTarget !== undefined) {
-                // Current index is still valid, keep it
-                comboboxSelectedValue.value = currentGroupIndex.value
-                setTimeout(() => {
-                    scrollToGroup(currentGroupIndex.value)
-                    setTimeout(() => {
-                        isLoadingFromNavigation.value = false
-                    }, 300)
-                }, 150)
-            } else {
-                // Current index not valid, reset
-                currentGroupIndex.value = 0
-                comboboxSelectedValue.value = 0
-                isLoadingFromNavigation.value = false
-            }
-        } else if (savedPosition && savedPosition.groupIndex < linkGroups.value.length) {
-            // Restore saved position
-            currentGroupIndex.value = savedPosition.groupIndex
-            comboboxSelectedValue.value = savedPosition.groupIndex
-
-            setTimeout(() => {
-                scrollToGroup(savedPosition.groupIndex)
-                if (savedPosition.scrollPosition && commentaryScrollerRef.value?.$el) {
-                    commentaryScrollerRef.value.$el.scrollTop = savedPosition.scrollPosition
-                }
-            }, 150)
-        } else {
-            // Check if book has a default commentator and this is first time opening
-            let defaultGroupIndex = 0
-            if (props.book?.defaultCommentatorBookId) {
-                const defaultIndex = linkGroups.value.findIndex(g => g.targetBookId === props.book!.defaultCommentatorBookId)
-                if (defaultIndex >= 0) {
-                    defaultGroupIndex = defaultIndex
-                }
-            }
-            
-            // Default to first group or default commentator
-            currentGroupIndex.value = defaultGroupIndex
-            comboboxSelectedValue.value = defaultGroupIndex
-            
-            if (defaultGroupIndex > 0) {
-                setTimeout(() => {
-                    scrollToGroup(defaultGroupIndex)
-                }, 150)
-            }
-        }
-
-        setTimeout(() => {
-            setupScrollTracking()
-            // Force virtual scroller to recalculate all item sizes after content loads
-            forceScrollerUpdate()
-        }, 200)
-
-    } catch (error) {
-        console.error('❌ Failed to load commentary links:', error)
-        linkGroups.value = []
-        isLoadingFromNavigation.value = false
-    } finally {
-        isLoading.value = false
-    }
-}
-
-// Force the virtual scroller to recalculate item sizes
-function forceScrollerUpdate() {
-    if (!commentaryScrollerRef.value) return
-
-    nextTick(() => {
-        // Access the internal scroller and force update
-        const scroller = commentaryScrollerRef.value as any
-        if (scroller && typeof scroller.forceUpdate === 'function') {
-            scroller.forceUpdate()
-        }
-
-        // Trigger multiple resize events to ensure recalculation
-        setTimeout(() => {
-            window.dispatchEvent(new Event('resize'))
-
-            // Force another update after a delay to catch any late-rendering content
-            setTimeout(() => {
-                if (scroller && typeof scroller.forceUpdate === 'function') {
-                    scroller.forceUpdate()
-                }
-                window.dispatchEvent(new Event('resize'))
-            }, 300)
-        }, 100)
-    })
-}
-
-// Handle scroll events to force recalculation when needed
-let scrollUpdateDebounce: number | undefined
-function handleScrollerScroll() {
-    // Debounce to avoid excessive updates
-    if (scrollUpdateDebounce) {
-        clearTimeout(scrollUpdateDebounce)
-    }
-
-    // Use shorter debounce for narrow viewports where height issues are more common
-    const debounceTime = containerWidth.value < 250 ? 200 : (containerWidth.value < 400 ? 300 : 500)
-
-    scrollUpdateDebounce = window.setTimeout(() => {
-        // Force update periodically during scrolling to fix any height miscalculations
-        const scroller = commentaryScrollerRef.value as any
-        if (scroller && typeof scroller.forceUpdate === 'function') {
-            scroller.forceUpdate()
-        }
-    }, debounceTime)
-}
-
+/**
+ * Handle group header click (navigate to target book)
+ */
 function handleGroupClick(item: any) {
     if (item.targetBookId !== undefined && item.targetLineIndex !== undefined) {
         const targetBook = categoryTreeStore.allBooks.find(book => book.id === item.targetBookId)
         const targetHasConnections = targetBook ? hasConnections(targetBook) : false
 
-        tabStore.openBookInNewTab(item.groupName, item.targetBookId, targetHasConnections, item.targetLineIndex, true)
+        tabStore.openBookInNewTab(
+            item.groupName,
+            item.targetBookId,
+            targetHasConnections,
+            item.targetLineIndex,
+            true
+        )
     }
 }
 
+/**
+ * Handle close button
+ */
 function handleClose() {
     const activeTab = tabStore.activeTab
     if (activeTab?.bookState) {
@@ -1011,177 +1422,18 @@ function handleClose() {
     }
 }
 
-// Computed property for current group name
-const currentGroupName = computed(() => {
-    if (processedLinkGroups.value.length > 0 &&
-        currentGroupIndex.value >= 0 &&
-        currentGroupIndex.value < processedLinkGroups.value.length) {
-        const group = processedLinkGroups.value[currentGroupIndex.value]
-        return group ? group.groupName : ''
-    }
-    return ''
-})
-
-// Computed property for combobox options
-const groupOptions = computed<ComboboxOption[]>(() => {
-    return processedLinkGroups.value.map((group, index) => ({
-        label: group.groupName,
-        value: index
-    }))
-})
-
-// Watch combobox changes and update scroll position accordingly
-watch(comboboxSelectedValue, (newValue) => {
-    if (typeof newValue === 'number') {
-        if (newValue !== currentGroupIndex.value) {
-            currentGroupIndex.value = newValue
-            scrollToGroup(newValue)
-        }
-    } else if (typeof newValue === 'string') {
-        const searchText = newValue.toLowerCase().trim()
-        if (searchText) {
-            const matchingGroup = processedLinkGroups.value.find(group =>
-                group.groupName.toLowerCase().includes(searchText)
-            )
-            if (matchingGroup) {
-                const matchingIndex = processedLinkGroups.value.indexOf(matchingGroup)
-                if (matchingIndex !== -1 && matchingIndex !== currentGroupIndex.value) {
-                    currentGroupIndex.value = matchingIndex
-                    scrollToGroup(matchingIndex)
-                }
-            }
-        }
-    }
-})
-
-// Watch currentGroupIndex changes to update combobox AND persist to tab state
-watch(currentGroupIndex, (newIndex) => {
-    if (typeof comboboxSelectedValue.value === 'number' && comboboxSelectedValue.value !== newIndex) {
-        comboboxSelectedValue.value = newIndex
-    }
-
-    // Persist to tab state for session/filter restoration
-    const activeTab = tabStore.activeTab
-    if (activeTab?.bookState && props.bookId !== undefined) {
-        const filterKey = selectedConnectionTypeId.value?.toString() || 'all'
-
-        if (!activeTab.bookState.commentaryPositionsByFilter) {
-            activeTab.bookState.commentaryPositionsByFilter = {}
-        }
-
-        const currentGroup = linkGroups.value[newIndex]
-        activeTab.bookState.commentaryPositionsByFilter[filterKey] = {
-            groupIndex: newIndex,
-            targetBookId: currentGroup?.targetBookId,
-            scrollPosition: commentaryScrollerRef.value?.$el?.scrollTop || 0
-        }
-    }
-})
-
-// Scroll to specific group (virtualized)
-const scrollToGroup = (index: number) => {
-    if (!commentaryScrollerRef.value) return
-
-    // Find the group header item for this group index
-    const groupHeaderId = `group-header-${index}`
-    const itemIndex = virtualCommentaryItems.value.findIndex(item => item.id === groupHeaderId)
-
-    if (itemIndex !== -1) {
-        isNavigating.value = true
-
-        const scrollerEl = commentaryScrollerRef.value.$el
-        if (scrollerEl) {
-            scrollerEl.style.overflow = 'hidden'
-            scrollerEl.style.pointerEvents = 'none'
-        }
-
-        commentaryScrollerRef.value.scrollToItem(itemIndex)
-
-        setTimeout(() => {
-            if (commentaryScrollerRef.value) {
-                commentaryScrollerRef.value.scrollToItem(itemIndex)
-
-                setTimeout(() => {
-                    if (scrollerEl) {
-                        scrollerEl.style.overflow = ''
-                        scrollerEl.style.pointerEvents = ''
-                    }
-                    setTimeout(() => {
-                        isNavigating.value = false
-                    }, 50)
-                }, 10)
-            }
-        }, 50)
+/**
+ * Handle keydown (prevent spacebar scroll)
+ */
+function handleKeyDown(e: KeyboardEvent) {
+    if (e.key === ' ' && e.target instanceof HTMLElement && e.target.tagName !== 'INPUT') {
+        e.preventDefault()
     }
 }
 
-// Scroll to first line (Ctrl+Home)
-const scrollToFirstLine = () => {
-    if (virtualCommentaryItems.value.length === 0) return
-    currentGroupIndex.value = 0
-    scrollToGroup(0)
-}
-
-// Scroll to last line (Ctrl+End)
-const scrollToLastLine = () => {
-    if (virtualCommentaryItems.value.length === 0) return
-    const lastIndex = virtualCommentaryItems.value.length - 1
-    currentGroupIndex.value = lastIndex
-    
-    // First scroll to last item to ensure it's rendered
-    if (!commentaryScrollerRef.value) return
-    
-    const groupItemId = `group-${lastIndex}`
-    const itemIndex = virtualCommentaryItems.value.findIndex(item => item.id === groupItemId)
-    
-    if (itemIndex !== -1) {
-        isNavigating.value = true
-        
-        const scrollerEl = commentaryScrollerRef.value.$el
-        if (scrollerEl) {
-            scrollerEl.style.overflow = 'hidden'
-            scrollerEl.style.pointerEvents = 'none'
-        }
-        
-        commentaryScrollerRef.value.scrollToItem(itemIndex)
-        
-        setTimeout(() => {
-            if (commentaryScrollerRef.value) {
-                commentaryScrollerRef.value.scrollToItem(itemIndex)
-                
-                // After item is in view, scroll to absolute bottom
-                setTimeout(() => {
-                    if (scrollerEl) {
-                        scrollerEl.scrollTop = scrollerEl.scrollHeight
-                        scrollerEl.style.overflow = ''
-                        scrollerEl.style.pointerEvents = ''
-                    }
-                    setTimeout(() => {
-                        isNavigating.value = false
-                    }, 50)
-                }, 10)
-            }
-        }, 50)
-    }
-}
-
-// Navigation functions
-const previousGroup = () => {
-    if (currentGroupIndex.value > 0) {
-        const newIndex = currentGroupIndex.value - 1
-        currentGroupIndex.value = newIndex
-        scrollToGroup(newIndex)
-    }
-}
-
-const nextGroup = () => {
-    if (currentGroupIndex.value < processedLinkGroups.value.length - 1) {
-        const newIndex = currentGroupIndex.value + 1
-        currentGroupIndex.value = newIndex
-        scrollToGroup(newIndex)
-    }
-}
-
+/**
+ * Select all content in container
+ */
 function selectAllInContainer() {
     const scrollerEl = commentaryScrollerRef.value?.$el
     if (!scrollerEl) return
@@ -1197,57 +1449,38 @@ function selectAllInContainer() {
     emit('clearOtherSelections')
 }
 
-// Handle copy event to copy full source content (not just visible virtual items)
+/**
+ * Handle copy event (copy full source content)
+ */
 function handleCopy(event: ClipboardEvent) {
-    console.log('[BookCommentaryView] Copy event detected')
-
     const selection = window.getSelection()
-    if (!selection || selection.rangeCount === 0) {
-        console.log('[BookCommentaryView] No selection, skipping')
-        return
-    }
+    if (!selection || selection.rangeCount === 0) return
 
-    // Check if the selection is within our container
     const containerEl = commentaryContentRef.value
-    if (!containerEl) {
-        console.log('[BookCommentaryView] No container element, skipping')
-        return
-    }
+    if (!containerEl) return
 
     const range = selection.getRangeAt(0)
-    if (!containerEl.contains(range.commonAncestorContainer)) {
-        console.log('[BookCommentaryView] Selection not in container, skipping')
-        return
-    }
+    if (!containerEl.contains(range.commonAncestorContainer)) return
 
-    // Check if user has selected all content (via Ctrl+A, context menu, or any other method)
-    // by checking if the selection encompasses the entire container
-    const isFullSelection = range.startContainer === containerEl || 
-                           containerEl.contains(range.startContainer) &&
-                           containerEl.contains(range.endContainer) &&
-                           range.toString().length > containerEl.textContent!.length * 0.95 // 95% threshold
+    // Check if full selection
+    const isFullSelection = range.startContainer === containerEl ||
+        containerEl.contains(range.startContainer) &&
+        containerEl.contains(range.endContainer) &&
+        range.toString().length > containerEl.textContent!.length * 0.95
 
-    if (!isFullSelection) {
-        console.log('[BookCommentaryView] Partial selection, using default browser copy')
-        return // Let browser handle partial selection copy
-    }
+    if (!isFullSelection) return // Let browser handle partial selection
 
-    console.log('[BookCommentaryView] Full selection detected, copying all source content...')
-
-    // Get all source commentary content as HTML
+    // Get all source commentary content
     let htmlContent = ''
     let textContent = ''
 
     processedLinkGroups.value.forEach((group) => {
-        // Add group header
         htmlContent += `<div style="font-weight: bold;">${group.groupName}</div>\n`
         textContent += `${group.groupName}\n`
 
-        // Add all links in the group
         group.links.forEach((link) => {
             htmlContent += `<div>${link.html}</div>\n`
 
-            // For plain text, strip HTML tags
             const tempDiv = document.createElement('div')
             tempDiv.innerHTML = link.html
             textContent += (tempDiv.textContent || tempDiv.innerText || '') + '\n'
@@ -1257,7 +1490,7 @@ function handleCopy(event: ClipboardEvent) {
         textContent += '\n'
     })
 
-    // Wrap in full HTML document with RTL body
+    // Wrap in full HTML document
     htmlContent = `<!DOCTYPE html>
 <html>
 <head>
@@ -1271,236 +1504,121 @@ ${htmlContent}
 </body>
 </html>`
 
-    // Set clipboard data
     event.clipboardData?.setData('text/html', htmlContent)
     event.clipboardData?.setData('text/plain', textContent)
     event.preventDefault()
-
-    console.log('[BookCommentaryView] ✅ Copied all content to clipboard:', {
-        totalGroups: processedLinkGroups.value.length,
-        htmlLength: htmlContent.length,
-        textLength: textContent.length
-    })
 }
 
-// Set up copy event listener using useEventListener for automatic cleanup
-useEventListener(commentaryContentRef, 'copy', handleCopy)
-
-// Scroll tracking with direct position checking
-let scrollTrackingCleanup: (() => void) | null = null
-
-// Register cleanup at component level (not inside async function)
-onUnmounted(() => {
-    if (scrollTrackingCleanup) {
-        scrollTrackingCleanup()
-    }
-})
-
-function setupScrollTracking() {
-    if (!commentaryScrollerRef.value?.$el) return
-
-    if (scrollTrackingCleanup) {
-        scrollTrackingCleanup()
-    }
-
-    const scrollerEl = commentaryScrollerRef.value.$el
-    let scrollTimeout: number | undefined
-
-    const updateCurrentSection = () => {
-        if (isNavigating.value || isLoadingFromNavigation.value) return
-
-        // Look for all items with data-group-index (headers and links)
-        const items = scrollerEl.querySelectorAll('[data-group-index]')
-        if (items.length === 0) return
-
-        const scrollerRect = scrollerEl.getBoundingClientRect()
-        const scrollerTop = scrollerRect.top
-        const scrollerBottom = scrollerRect.bottom
-
-        let targetSection: number | undefined = undefined
-
-        if (scrollDirection.value === 'up') {
-            // Scrolling UP: Find the first item whose top is visible or just above viewport top
-            let bestSection: number | undefined = undefined
-            let bestDistance = Infinity
-
-            items.forEach((item: Element) => {
-                const rect = item.getBoundingClientRect()
-                const sectionIndex = parseInt(item.getAttribute('data-group-index') || '-1')
-                if (sectionIndex < 0) return
-
-                // Check if item is visible (any part in viewport)
-                const isVisible = rect.bottom > scrollerTop && rect.top < scrollerBottom
-
-                if (isVisible) {
-                    // Distance from item top to viewport top (prefer items at top)
-                    const distance = Math.abs(rect.top - scrollerTop)
-                    if (distance < bestDistance) {
-                        bestDistance = distance
-                        bestSection = sectionIndex
-                    }
-                }
-            })
-
-            targetSection = bestSection
-        } else if (scrollDirection.value === 'down') {
-            // Scrolling DOWN: Find the last item that's visible
-            let bestSection: number | undefined = undefined
-            let bestTop = -Infinity
-
-            items.forEach((item: Element) => {
-                const rect = item.getBoundingClientRect()
-                const sectionIndex = parseInt(item.getAttribute('data-group-index') || '-1')
-                if (sectionIndex < 0) return
-
-                // Check if item is visible (any part in viewport)
-                const isVisible = rect.bottom > scrollerTop && rect.top < scrollerBottom
-
-                if (isVisible && rect.top > bestTop) {
-                    bestTop = rect.top
-                    bestSection = sectionIndex
-                }
-            })
-
-            targetSection = bestSection
-        } else {
-            // No direction: Find item closest to top of viewport
-            let bestSection: number | undefined = undefined
-            let bestDistance = Infinity
-
-            items.forEach((item: Element) => {
-                const rect = item.getBoundingClientRect()
-                const sectionIndex = parseInt(item.getAttribute('data-group-index') || '-1')
-                if (sectionIndex < 0) return
-
-                const isVisible = rect.bottom > scrollerTop && rect.top < scrollerBottom
-                if (isVisible) {
-                    const distance = Math.abs(rect.top - scrollerTop)
-                    if (distance < bestDistance) {
-                        bestDistance = distance
-                        bestSection = sectionIndex
-                    }
-                }
-            })
-
-            targetSection = bestSection
-        }
-
-        if (targetSection !== undefined && targetSection >= 0 && targetSection !== currentGroupIndex.value) {
-            currentGroupIndex.value = targetSection
-        }
-    }
-
-    // Track scroll direction and update current section
-    const handleScroll = () => {
-        if (isNavigating.value || isLoadingFromNavigation.value) return
-
-        const currentScrollTop = scrollerEl.scrollTop
-
-        // Update scroll direction
-        if (currentScrollTop > lastScrollTop.value) {
-            scrollDirection.value = 'down'
-        } else if (currentScrollTop < lastScrollTop.value) {
-            scrollDirection.value = 'up'
-        }
-        lastScrollTop.value = currentScrollTop
-
-        // Debounce the section detection (short delay for responsiveness)
-        clearTimeout(scrollTimeout)
-        scrollTimeout = window.setTimeout(() => {
-            updateCurrentSection()
-
-            // Also update scroll position in persistence
-            const activeTab = tabStore.activeTab
-            if (activeTab?.bookState && props.bookId !== undefined) {
-                const filterKey = selectedConnectionTypeId.value?.toString() || 'all'
-                if (activeTab.bookState.commentaryPositionsByFilter?.[filterKey]) {
-                    activeTab.bookState.commentaryPositionsByFilter[filterKey].scrollPosition = currentScrollTop
-                }
-            }
-        }, 16) // ~1 frame at 60fps for smooth updates
-    }
-
-    scrollerEl.addEventListener('scroll', handleScroll, { passive: true })
-
-    // Initial update
-    setTimeout(() => {
-        updateCurrentSection()
-    }, 100)
-
-    scrollTrackingCleanup = () => {
-        scrollerEl.removeEventListener('scroll', handleScroll)
-        clearTimeout(scrollTimeout)
-    }
-}
-
-// Watch for linkGroups changes to refresh scroll tracking
-watch(linkGroups, (newGroups) => {
-    if (currentGroupIndex.value >= newGroups.length) {
-        currentGroupIndex.value = 0
-    }
-
-    nextTick(() => {
-        setupScrollTracking()
-        // Force scroller to recalculate when content changes
-        forceScrollerUpdate()
-    })
-}, { flush: 'post' })
-
-// Watch for significant changes in virtual items and force recalculation
-watch(() => virtualCommentaryItems.value.length, () => {
-    nextTick(() => {
-        forceScrollerUpdate()
-    })
-})
-
-// Watch for font size and line height changes and force recalculation
-watch([() => settingsStore.fontSize, () => settingsStore.linePadding], () => {
-    nextTick(() => {
-        forceScrollerUpdate()
-        // Force multiple updates to ensure proper recalculation
-        setTimeout(() => {
-            forceScrollerUpdate()
-        }, 100)
-    })
-})
 </script>
 
 <style scoped>
+/* ============================================ */
+/* HEADER */
+/* ============================================ */
 .commentary-header {
     justify-content: space-between;
-    padding: 0 15px 5px 5px;
+    padding: 2px 6px;
+    min-height: 34px;
 }
 
 .commentary-title {
     align-self: center;
+    padding: 0 4px 3px 4px;
 }
 
 .commentary-navigation {
-    gap: 5px;
+    gap: 4px;
 }
 
 .nav-btn {
-    min-width: 28px;
-    min-height: 28px;
-    width: 28px;
-    height: 28px;
+    min-width: 32px;
+    min-height: 32px;
+    width: 32px;
+    height: 32px;
     background: transparent;
     border: none;
     border-radius: 3px;
     color: var(--text-primary);
     flex-shrink: 0;
     padding: 0;
+    touch-action: manipulation;
+    transition: transform 0.1s ease, background-color 0.1s ease;
 }
 
 .nav-btn:hover:not(:disabled) {
     background: var(--hover-bg);
 }
 
-.nav-btn:disabled {
-    opacity: 0.3;
+.nav-btn:active:not(:disabled) {
+    transform: scale(0.95);
+    background: var(--active-bg, var(--hover-bg));
 }
 
+.nav-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.commentary-close-btn {
+    min-width: 32px;
+    min-height: 32px;
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: var(--text-primary);
+    touch-action: manipulation;
+    transition: transform 0.1s ease, background-color 0.1s ease;
+}
+
+.commentary-close-btn:hover {
+    background: var(--hover-bg);
+}
+
+.commentary-close-btn:active {
+    transform: scale(0.95);
+    background: var(--active-bg, var(--hover-bg));
+}
+
+/* Touch device specific styles */
+@media (hover: none) and (pointer: coarse) {
+    .commentary-navigation {
+        gap: 6px;
+    }
+
+    .commentary-header {
+        padding: 4px 8px;
+    }
+
+    .nav-btn,
+    .commentary-close-btn {
+        min-width: 36px;
+        min-height: 36px;
+        width: 36px;
+        height: 36px;
+    }
+}
+
+/* Icon sizing for touch-friendly buttons */
+.nav-btn .small-icon,
+.commentary-close-btn .small-icon {
+    width: 16px !important;
+    height: 16px !important;
+}
+
+@media (hover: none) and (pointer: coarse) {
+
+    .nav-btn .small-icon,
+    .commentary-close-btn .small-icon {
+        width: 18px !important;
+        height: 18px !important;
+    }
+}
+
+/* ============================================ */
+/* CONTENT AREA */
+/* ============================================ */
 .commentary-content-container {
     flex: 1 1 0;
     min-height: 0;
@@ -1514,9 +1632,13 @@ watch([() => settingsStore.fontSize, () => settingsStore.linePadding], () => {
     min-height: 0;
     padding: 16px;
     direction: rtl;
-    font-size: var(--font-size, 100%);
+    scroll-padding-top: 70px;
+    /* Account for search bar */
 }
 
+/* ============================================ */
+/* LOADING & EMPTY STATES */
+/* ============================================ */
 .commentary-loading {
     gap: 12px;
     direction: rtl;
@@ -1549,14 +1671,15 @@ watch([() => settingsStore.fontSize, () => settingsStore.linePadding], () => {
     direction: rtl;
 }
 
+/* ============================================ */
+/* COMMENTARY ITEMS */
+/* ============================================ */
 .group-header {
     font-size: 1.125em;
     color: var(--text-primary);
     margin: 0 0 12px 0;
     padding: 8px 0;
-    direction: rtl;
-    font-family: var(--header-font);
-    border-bottom: 2px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
 }
 
 .group-header.c-pointer:hover {
@@ -1564,29 +1687,48 @@ watch([() => settingsStore.fontSize, () => settingsStore.linePadding], () => {
 }
 
 .link-item {
-    color: var(--text-primary);
-    font-family: var(--text-font);
-    line-height: var(--line-height, 1.6);
-    direction: rtl;
-    padding-block-start: 0.15em;
-    padding-block-end: 0.15em;
-    margin: 0;
-    display: block;
+    margin-bottom: 8px;
+    padding: 4px 0;
 }
 
-.commentary-section {
-    padding-bottom: 24px;
-    position: relative;
-    width: 100%;
-    box-sizing: border-box;
+/* Apply header font to any headers in commentary content */
+.link-item :deep(h1),
+.link-item :deep(h2),
+.link-item :deep(h3),
+.link-item :deep(h4),
+.link-item :deep(h5),
+.link-item :deep(h6) {
+    font-family: var(--header-font) !important;
 }
 
-/* Ensure DynamicScrollerItem doesn't have positioning issues */
-.commentary-scroller :deep(.vue-recycle-scroller__item-wrapper) {
-    position: relative;
+/* Also apply header font to group headers (commentary names) */
+.group-header {
+    font-family: var(--header-font) !important;
 }
 
-.commentary-scroller :deep(.vue-recycle-scroller__item-view) {
-    width: 100%;
+/* ============================================ */
+/* SEARCH HIGHLIGHTING */
+/* ============================================ */
+:deep(mark) {
+    background-color: rgba(250, 204, 21, 0.5);
+    color: inherit;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+:deep(mark.current) {
+    background-color: rgba(245, 158, 11, 0.8) !important;
+    font-weight: bold;
+    color: black;
+}
+
+:root.dark :deep(mark) {
+    background-color: rgba(250, 204, 21, 0.3);
+}
+
+:root.dark :deep(mark.current) {
+    background-color: rgba(251, 191, 36, 0.8) !important;
+    font-weight: bold;
+    color: black;
 }
 </style>

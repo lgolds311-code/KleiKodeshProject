@@ -4,8 +4,8 @@
          style="position: relative;">
         <GenericSearch ref="searchRef"
                        :is-open="isSearchOpen"
-                       :current-match-index="search.currentMatchIndex.value"
-                       :total-matches="search.totalMatches.value"
+                       :current-match-index="currentMatchIndex"
+                       :total-matches="totalMatches"
                        top-offset="4px"
                        @close="handleSearchClose"
                        @search="handleSearch"
@@ -51,6 +51,9 @@
 </template>
 
 <script setup lang="ts">
+// ============================================
+// IMPORTS
+// ============================================
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { useFocus, useEventListener } from '@vueuse/core'
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
@@ -62,10 +65,15 @@ import { useVirtualizedSearch } from '../composables/useVirtualizedSearch'
 import { useTabStore } from '../stores/tabStore'
 import { useSettingsStore } from '../stores/settingsStore'
 
+// ============================================
+// STORES
+// ============================================
 const tabStore = useTabStore()
 const settingsStore = useSettingsStore()
 
-// Reactive dark mode detection
+// ============================================
+// DARK MODE DETECTION
+// ============================================
 const isDarkMode = ref(false)
 
 const updateDarkMode = () => {
@@ -87,6 +95,9 @@ onMounted(() => {
     })
 })
 
+// ============================================
+// COMPUTED STYLES
+// ============================================
 // Computed styles that respect dark mode and reading background
 const containerStyles = computed(() => ({
     backgroundColor: !isDarkMode.value && settingsStore.readingBackgroundColor
@@ -97,6 +108,9 @@ const containerStyles = computed(() => ({
         : 'var(--text-primary)'
 }))
 
+// ============================================
+// PROPS & EMITS
+// ============================================
 const props = defineProps<{
     tabId?: number
     altTocByLineIndex?: Map<number, import('../services/bookTocService').AltTocLineEntry[]>
@@ -110,6 +124,9 @@ const emit = defineEmits<{
     clearOtherSelections: []
 }>()
 
+// ============================================
+// REFS & STATE
+// ============================================
 const myTab = computed(() => tabStore.tabs.find(t => t.id === props.tabId))
 const selectedLineIndex = ref<number | null>(null)
 const globalSearchHighlightLineIndex = ref<number | null>(null)
@@ -127,6 +144,9 @@ const { focused: hasFocus } = useFocus(scrollerElRef)
 // Track if Ctrl+A was pressed and selection is still active (for chained Ctrl+A -> Ctrl+C shortcut)
 const selectAllWasPressed = ref(false)
 
+// ============================================
+// EVENT LISTENERS - Selection Management
+// ============================================
 // Reset selectAll flag when selection changes or user interacts
 useEventListener(scrollerElRef, 'mousedown', () => {
     selectAllWasPressed.value = false
@@ -143,6 +163,9 @@ useEventListener(document, 'selectionchange', () => {
     }
 })
 
+// ============================================
+// EVENT LISTENERS - Keyboard Shortcuts
+// ============================================
 // Keyboard shortcuts using useEventListener to support any keyboard layout
 useEventListener('keydown', (event: KeyboardEvent) => {
     if (!hasFocus.value) return
@@ -187,25 +210,31 @@ function handleKeyDown(e: KeyboardEvent) {
     }
 }
 
+// ============================================
+// COMPUTED PROPERTIES - Virtual Scroller
+// ============================================
 // Minimum item size for the scroller - be more conservative to prevent scroll issues
 const minItemSize = computed(() => {
     return 40 // Conservative base size for block mode
 })
 
+// ============================================
+// COMPUTED PROPERTIES - Virtual Items
+// ============================================
 // Create virtual items array for the scroller
 // Memoize highlighting to prevent unnecessary recalculations
 const virtualItems = computed(() => {
     const items = []
     const lines = viewerState.lines.value
     const diacriticsState = myTab.value?.bookState?.diacriticsState
-    const currentMatch = search.currentMatch.value
-    const query = search.searchQuery.value
+    const currentMatchValue = currentMatch.value
+    const query = searchQuery.value
 
     // Build a set of line indices that have matches for quick lookup
     const linesWithMatches = new Set<number>()
     if (query) {
-        search.allMatches.value.forEach(match => {
-            linesWithMatches.add(match.lineIndex)
+        matches.value.forEach((match) => {
+            linesWithMatches.add(match.itemIndex)
         })
     }
 
@@ -220,8 +249,8 @@ const virtualItems = computed(() => {
 
         // Apply in-book search highlighting only to lines that have matches
         if (processedContent !== '\u00A0' && query && linesWithMatches.has(i)) {
-            const isCurrentLine = currentMatch?.lineIndex === i
-            processedContent = search.highlightInContent(processedContent, isCurrentLine)
+            const isCurrentLine = currentMatchValue?.itemIndex === i
+            processedContent = highlightMatches(processedContent, i)
         }
         // Apply global search highlighting (separate from in-book search) - applied to datasource
         else if (processedContent !== '\u00A0' && globalSearchTerms.value && i === globalSearchHighlightLineIndex.value) {
@@ -242,9 +271,29 @@ const virtualItems = computed(() => {
     return items
 })
 
+// ============================================
+// SEARCH COMPOSABLE SETUP
+// ============================================
 // Use virtualized search composable
-const search = useVirtualizedSearch()
+const searchUI = useVirtualizedSearch({
+    scrollerRef,
+    itemSelector: '[data-line-index-observer]',
+    itemIndexAttribute: 'data-line-index-observer',
+    minItemSize,
+    totalItems: computed(() => viewerState.totalLines.value),
+    searchBarOffset: 50,
+    onScrollToItem: async (lineIndex: number) => {
+        // Prioritize loading lines around the target
+        await viewerState.prioritizeLines(lineIndex, 100)
+        await nextTick()
+    }
+})
 
+const { searchQuery, matches, currentMatchIndex, totalMatches, currentMatch, highlightMatches, clear, isSearchOpen: searchOpenState, isNavigating, handleSearchNext, handleSearchPrevious, openSearch, handleSearchClose: closeSearch } = searchUI
+
+// ============================================
+// SEARCH STATE MANAGEMENT
+// ============================================
 // Sync search state with tab store
 const isSearchOpen = computed({
     get: () => myTab.value?.bookState?.isSearchOpen || false,
@@ -252,9 +301,20 @@ const isSearchOpen = computed({
         if (myTab.value?.bookState) {
             myTab.value.bookState.isSearchOpen = value
         }
+        searchOpenState.value = value
     }
 })
 
+// Sync searchOpenState with isSearchOpen
+watch(searchOpenState, (value) => {
+    if (myTab.value?.bookState) {
+        myTab.value.bookState.isSearchOpen = value
+    }
+})
+
+// ============================================
+// WATCHERS - Line Selection
+// ============================================
 // Watch for selectedLineIndex changes to restore selection
 watch(() => myTab.value?.bookState?.selectedLineIndex, (newIndex) => {
     if (newIndex !== undefined) {
@@ -262,6 +322,9 @@ watch(() => myTab.value?.bookState?.selectedLineIndex, (newIndex) => {
     }
 }, { immediate: true })
 
+// ============================================
+// EVENT HANDLERS - Line Click
+// ============================================
 function handleLineClick(lineIndex: number) {
     selectedLineIndex.value = lineIndex
 
@@ -284,150 +347,22 @@ function handleLineClick(lineIndex: number) {
     emit('lineClick', lineIndex)
 }
 
+// ============================================
+// EVENT HANDLERS - Search
+// ============================================
 // Search handlers
-// Flag to prevent scroll position tracking during programmatic navigation
-const isNavigating = ref(false)
-
 function handleSearchClose() {
     isSearchOpen.value = false
-    search.clear()
+    clear()
 }
 
 async function handleSearch(query: string) {
-    if (!query.trim()) {
-        search.clear()
-        return
-    }
-
-    // Get current scroll position to find closest match
-    let currentLineIndex: number | undefined
-
-    if (scrollerRef.value?.$el) {
-        const scrollerEl = scrollerRef.value.$el
-        const scrollTop = scrollerEl.scrollTop || 0
-        // Estimate current line from scroll position
-        currentLineIndex = Math.floor(scrollTop / minItemSize.value)
-
-        // Clamp to valid range
-        if (currentLineIndex < 0) currentLineIndex = 0
-        if (currentLineIndex >= viewerState.totalLines.value) {
-            currentLineIndex = viewerState.totalLines.value - 1
-        }
-    }
-
-    await search.search(query, viewerState.lines.value, viewerState.totalLines.value, currentLineIndex)
-
-    // Auto-scroll to closest match
-    if (search.currentMatch.value) {
-        await scrollToMatch(search.currentMatch.value.lineIndex)
-    }
+    searchUI.handleSearch(viewerState.lines.value, query)
 }
 
-async function handleSearchNext() {
-    search.nextMatch()
-    if (search.currentMatch.value) {
-        await scrollToMatch(search.currentMatch.value.lineIndex)
-    }
-}
-
-async function handleSearchPrevious() {
-    search.previousMatch()
-    if (search.currentMatch.value) {
-        await scrollToMatch(search.currentMatch.value.lineIndex)
-    }
-}
-
-async function scrollToMatch(lineIndex: number) {
-    // Set navigation flag
-    isNavigating.value = true
-
-    // Prioritize loading lines around the match
-    await viewerState.prioritizeLines(lineIndex, 100)
-
-    // Check if the line is already in view
-    await nextTick()
-    const scrollerEl = scrollerRef.value?.$el
-    if (scrollerEl) {
-        const lineEl = scrollerEl.querySelector(`[data-line-index-observer="${lineIndex}"]`)
-
-        if (lineEl) {
-            // Line is rendered, check if it's in viewport
-            const lineRect = lineEl.getBoundingClientRect()
-            const scrollerRect = scrollerEl.getBoundingClientRect()
-            const searchBarOffset = 50
-
-            const isInView = lineRect.top >= (scrollerRect.top + searchBarOffset) &&
-                lineRect.bottom <= scrollerRect.bottom
-
-            if (!isInView) {
-                // Only scroll if not in view
-                await scrollToLine(lineIndex)
-                await nextTick()
-            }
-        } else {
-            // Line not rendered, need to scroll to it
-            await scrollToLine(lineIndex)
-            await nextTick()
-        }
-    }
-
-    // Update current mark styling via DOM (avoid full re-render)
-    setTimeout(() => {
-        updateCurrentMarkStyling()
-
-        // Check if current mark is visible, scroll only if needed
-        const currentMark = scrollerEl?.querySelector('mark.current')
-        if (currentMark && scrollerEl) {
-            const markRect = currentMark.getBoundingClientRect()
-            const scrollerRect = scrollerEl.getBoundingClientRect()
-            const searchBarOffset = 50
-
-            // Check if mark is hidden behind search bar or outside viewport
-            const isMarkInView = markRect.top >= (scrollerRect.top + searchBarOffset) &&
-                markRect.bottom <= scrollerRect.bottom
-
-            if (!isMarkInView) {
-                // Only scroll if mark is not fully visible
-                if (markRect.top < scrollerRect.top + searchBarOffset) {
-                    // Scroll up a bit to clear the search bar
-                    scrollerEl.scrollTop -= (scrollerRect.top + searchBarOffset - markRect.top + 10)
-                } else {
-                    // Use normal scroll behavior
-                    currentMark.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-                }
-            }
-        }
-
-        // Clear navigation flag
-        setTimeout(() => {
-            isNavigating.value = false
-        }, 300)
-    }, 50)
-}
-
-// Update current mark styling without triggering full re-render
-function updateCurrentMarkStyling() {
-    const scrollerEl = scrollerRef.value?.$el
-    if (!scrollerEl) return
-
-    const currentMatch = search.currentMatch.value
-    if (!currentMatch) return
-
-    // Remove 'current' class from all marks
-    const allMarks = scrollerEl.querySelectorAll('mark.current')
-    allMarks.forEach((mark: Element) => mark.classList.remove('current'))
-
-    // Find the line element
-    const lineEl = scrollerEl.querySelector(`[data-line-index-observer="${currentMatch.lineIndex}"]`)
-    if (!lineEl) return
-
-    // Find all marks in this line and add 'current' to the right one
-    const marks = lineEl.querySelectorAll('mark')
-    if (marks[currentMatch.matchIndex]) {
-        marks[currentMatch.matchIndex].classList.add('current')
-    }
-}
-
+// ============================================
+// SCROLL POSITION TRACKING
+// ============================================
 let scrollUpdateTimeout: any = null
 
 function handleScrollForPositionTracking() {
@@ -509,7 +444,9 @@ function getTopVisibleLinePosition(): { lineIndex: number; offset: number } | nu
 }
 
 
-
+// ============================================
+// WATCHERS - Book Loading
+// ============================================
 // Load book when bookId changes
 watch(() => myTab.value?.bookState?.bookId, async (bookId, oldBookId) => {
     if (bookId && bookId !== oldBookId) {
@@ -549,6 +486,9 @@ watch(() => myTab.value?.bookState?.bookId, async (bookId, oldBookId) => {
     }
 }, { immediate: true })
 
+// ============================================
+// WATCHERS - Tab Activation
+// ============================================
 // Restore scroll when tab becomes active
 watch(() => myTab.value?.isActive, async (isActive, wasActive) => {
     const bookId = myTab.value?.bookState?.bookId
@@ -573,6 +513,9 @@ watch(() => myTab.value?.isActive, async (isActive, wasActive) => {
     }
 })
 
+// ============================================
+// SCROLL FUNCTIONS
+// ============================================
 async function scrollToLine(lineIndex: number, pixelOffset?: number) {
     if (!scrollerRef.value) return
 
@@ -650,6 +593,9 @@ async function scrollToLine(lineIndex: number, pixelOffset?: number) {
     }
 }
 
+// ============================================
+// TOC NAVIGATION
+// ============================================
 async function handleTocSelection(lineIndex: number) {
     // Set flag to prevent scroll tracking interference
     isNavigating.value = true
@@ -666,6 +612,9 @@ async function handleTocSelection(lineIndex: number) {
     }, 200)
 }
 
+// ============================================
+// SELECTION FUNCTIONS
+// ============================================
 // Handle selection directly
 function selectAllInContainer() {
     const scrollerEl = scrollerRef.value?.$el
@@ -682,6 +631,9 @@ function selectAllInContainer() {
     emit('clearOtherSelections')
 }
 
+// ============================================
+// COPY HANDLER
+// ============================================
 // Handle copy event to copy full source content (not just visible virtual items)
 function handleCopy(event: ClipboardEvent) {
     console.log('[BookLineViewer] Copy event detected')
@@ -771,6 +723,9 @@ ${htmlContent}
 // Set up copy event listener using useEventListener for automatic cleanup
 useEventListener(scrollerElRef, 'copy', handleCopy)
 
+// ============================================
+// HELPER FUNCTIONS - Diacritics Filtering
+// ============================================
 // Helper function to apply diacritics filtering to HTML content
 function applyDiacriticsFilter(htmlContent: string, state: number): string {
     if (!htmlContent || state === 0) return htmlContent
@@ -814,6 +769,9 @@ function applyDiacriticsFilter(htmlContent: string, state: number): string {
     return tempDiv.innerHTML
 }
 
+// ============================================
+// HELPER FUNCTIONS - Global Search Highlighting
+// ============================================
 // Helper function to highlight global search with snippet background
 function highlightGlobalSearchWithSnippet(htmlContent: string, searchTerms: string, snippet: string): string {
     if (!searchTerms || !htmlContent || htmlContent === '\u00A0') {
@@ -836,6 +794,9 @@ function highlightGlobalSearchWithSnippet(htmlContent: string, searchTerms: stri
     return highlightGlobalSearchTerms(contentWithSnippetBg, searchTerms)
 }
 
+// ============================================
+// HELPER FUNCTIONS - Snippet Wrapping
+// ============================================
 // Helper function to find snippet in content and wrap it with background span
 function findAndWrapSnippet(htmlContent: string, snippet: string): string {
     const tempDiv = document.createElement('div')
@@ -865,6 +826,9 @@ function findAndWrapSnippet(htmlContent: string, snippet: string): string {
     return wrapTextRange(htmlContent, snippetStart, snippetEnd)
 }
 
+// ============================================
+// HELPER FUNCTIONS - Text Range Wrapping
+// ============================================
 // Helper function to wrap a text range with background span
 function wrapTextRange(htmlContent: string, start: number, end: number): string {
     const tempDiv = document.createElement('div')
@@ -927,6 +891,9 @@ function wrapTextRange(htmlContent: string, start: number, end: number): string 
     return tempDiv.innerHTML
 }
 
+// ============================================
+// HELPER FUNCTIONS - Proximity Matching
+// ============================================
 // Helper function to find best proximity match when exact snippet not found
 function wrapBestProximityMatch(htmlContent: string, snippet: string): string {
     // Split snippet into words
@@ -992,6 +959,9 @@ function wrapBestProximityMatch(htmlContent: string, snippet: string): string {
     return wrapTextRange(htmlContent, bestStart, bestEnd)
 }
 
+// ============================================
+// HELPER FUNCTIONS - Term Highlighting
+// ============================================
 // Helper function to highlight global search terms (foreground color, not background)
 function highlightGlobalSearchTerms(htmlContent: string, searchTerms: string): string {
     if (!searchTerms || !htmlContent || htmlContent === '\u00A0') {
@@ -1125,6 +1095,9 @@ function highlightGlobalSearchTerms(htmlContent: string, searchTerms: string): s
     return tempDiv.innerHTML
 }
 
+// ============================================
+// HELPER FUNCTIONS - Search Utilities
+// ============================================
 // Helper functions for global search highlighting
 function removeDiacriticsForSearch(text: string): string {
     return text.replace(/[\u0591-\u05C7]/g, '')
@@ -1157,6 +1130,9 @@ function isDiacriticForSearch(char: string): boolean {
     return code >= 0x0591 && code <= 0x05C7
 }
 
+// ============================================
+// LIFECYCLE - Cleanup
+// ============================================
 onUnmounted(() => {
     viewerState.cleanup()
 
@@ -1172,6 +1148,9 @@ onUnmounted(() => {
     }
 })
 
+// ============================================
+// COMPONENT EXPORTS
+// ============================================
 defineExpose({
     handleTocSelection,
     // Expose a method so parent can request an explicit scroll to a line.
@@ -1200,6 +1179,9 @@ defineExpose({
     }
 })
 
+// ============================================
+// PUBLIC API - Exposed Functions
+// ============================================
 // Helper function to scroll to the first highlighted word in a line
 function scrollToFirstHighlightedWord(lineIndex: number) {
     const scrollerEl = scrollerRef.value?.$el
@@ -1240,6 +1222,8 @@ function scrollToFirstHighlightedWord(lineIndex: number) {
 
 .scroller {
     height: 100%;
+    scroll-padding-top: 70px;
+    /* Account for search bar */
 }
 
 /* Global search snippet background animation */
