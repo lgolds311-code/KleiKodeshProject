@@ -1,0 +1,89 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Version>3.6.2</Version>
+    <ApplicationIcon>KleiKodesh_Main.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>AnyCPU</Platforms>
+    <!-- Prevent dependency DLLs from being copied to output — they are embedded as resources -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.VisualBasic" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="KleiKodesh_Main.ico"/>
+  </ItemGroup>
+
+  <!-- Prebuild: build KleiKodeshVsto and pack KleiKodesh.zip — runs in both Debug and Release -->
+  <Target Name="BuildVstoAndPack" BeforeTargets="BeforeBuild">
+    <PropertyGroup>
+      <KleiKodeshProject>$(MSBuildProjectDirectory)\..\..\KleiKodeshVsto\KleiKodeshVsto.csproj</KleiKodeshProject>
+      <!-- In Release use Release|AnyCPU (or overrides from build script); in Debug use Debug|AnyCPU -->
+      <VstoConfig Condition="'$(Configuration)' == 'Release' AND '$(VstoConfiguration)' != ''">$(VstoConfiguration)</VstoConfig>
+      <VstoConfig Condition="'$(Configuration)' == 'Release' AND '$(VstoConfiguration)' == ''">Release</VstoConfig>
+      <VstoConfig Condition="'$(Configuration)' != 'Release'">Debug</VstoConfig>
+      <VstoPlatformParam Condition="'$(VstoPlatform)' != ''">$(VstoPlatform)</VstoPlatformParam>
+      <VstoPlatformParam Condition="'$(VstoPlatform)' == ''">AnyCPU</VstoPlatformParam>
+      <VstoOutputPath>$(MSBuildProjectDirectory)\..\..\KleiKodeshVsto\bin\$(VstoConfig)</VstoOutputPath>
+      <TempPackageDir>$(OutputPath)VstoPackage</TempPackageDir>
+      <ZipOutputPath>$(MSBuildProjectDirectory)\KleiKodesh.zip</ZipOutputPath>
+      <InstallProgressFile>$(MSBuildProjectDirectory)\Helpers\AddinInstaller.cs</InstallProgressFile>
+    </PropertyGroup>
+
+    <PropertyGroup>
+      <MSBuildPath Condition="Exists('C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe')">C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe</MSBuildPath>
+      <MSBuildPath Condition="'$(MSBuildPath)' == '' AND Exists('C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe')">C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe</MSBuildPath>
+      <MSBuildPath Condition="'$(MSBuildPath)' == '' AND Exists('C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe')">C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe</MSBuildPath>
+      <MSBuildPath Condition="'$(MSBuildPath)' == '' AND Exists('C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe')">C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe</MSBuildPath>
+    </PropertyGroup>
+
+    <Message Text="Building KleiKodeshVsto in $(VstoConfig)|$(VstoPlatformParam)..." Importance="high" />
+    <Exec Command="&quot;$(MSBuildPath)&quot; &quot;$(KleiKodeshProject)&quot; /p:Configuration=$(VstoConfig) /p:Platform=$(VstoPlatformParam)" ContinueOnError="false" />
+
+    <Delete Files="$(ZipOutputPath)" Condition="Exists('$(ZipOutputPath)')" />
+    <MakeDir Directories="$(TempPackageDir)" />
+
+    <ItemGroup>
+      <VstoFiles Include="$(VstoOutputPath)\**\*.*" Exclude="$(VstoOutputPath)\BloomFilters\**\*.*" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(VstoFiles)" DestinationFolder="$(TempPackageDir)\%(RecursiveDir)" />
+
+    <Message Text="Creating VSTO zip package..." Importance="high" />
+    <Exec Command="powershell -Command &quot;Compress-Archive -Path '$(TempPackageDir)\*' -DestinationPath '$(ZipOutputPath)' -Force&quot;" />
+
+    <RemoveDir Directories="$(TempPackageDir)" />
+    <Message Text="VSTO package ready: $(ZipOutputPath)" Importance="high" />
+  </Target>
+
+  <ItemGroup>
+    <EmbeddedResource Include="KleiKodesh.zip" Condition="Exists('KleiKodesh.zip')">
+      <LogicalName>KleiKodesh.zip</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\WebSitesLib\WebSitesLib2\WebSitesWhitelist.json">
+      <LogicalName>KleiKodeshVstoInstallerWpf.WebSitesWhitelist.json</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+  </ItemGroup>
+
+  <!-- Embed all dependency DLLs into the exe as resources -->
+  <Target Name="EmbedDependencies" AfterTargets="ResolveReferences">
+    <ItemGroup>
+      <EmbeddedResource Include="@(ReferenceCopyLocalPaths)"
+                        Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.dll'">
+        <LogicalName>%(ReferenceCopyLocalPaths.DestinationSubDirectory)%(ReferenceCopyLocalPaths.Filename)%(ReferenceCopyLocalPaths.Extension)</LogicalName>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
+
+</Project>
