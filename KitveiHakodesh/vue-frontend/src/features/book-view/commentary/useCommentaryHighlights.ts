@@ -1,51 +1,43 @@
 /**
- * Manages user highlights for the currently open book.
+ * Manages user highlights for all commentary books visible in the commentary panel.
  *
- * Responsibilities:
- * - Load all highlights for the book on mount
- * - Provide per-line highlight lookup for the renderer
- * - Apply a highlight to a selection (handles overlaps: merge / recolor)
- * - Clear a highlight from a selection (handles partial overlap: trim / split)
- * - Persist all mutations to user_settings.db via userSettingsDb.ts
+ * Unlike useBookViewHighlights (which loads highlights for a single book by id),
+ * the commentary panel shows lines from many different books simultaneously — each
+ * CommentaryGroup has its own bookId and its own set of lineIds. Highlights must
+ * be stored and looked up using the commentary book's bookId, not the parent book's id.
  *
- * Highlight overlap rules when APPLYING a color to range [newStart, newEnd]:
- *   - Existing highlight fully inside new range      → delete existing, new covers it
- *   - Existing highlight fully covers new range      → split into left stub + right stub, new fills gap
- *   - Existing highlight partially overlaps on left  → trim its end to newStart
- *   - Existing highlight partially overlaps on right → trim its start to newEnd
- *   - Existing highlight has SAME color              → merge (extend to cover both)
- *
- * Clear rules when ERASING range [newStart, newEnd]:
- *   - Existing highlight fully inside erased range   → delete
- *   - Existing highlight fully covers erased range   → split into left stub + right stub
- *   - Existing highlight partially overlaps on left  → trim its end to newStart
- *   - Existing highlight partially overlaps on right → trim its start to newEnd
+ * This composable:
+ * - Loads highlights lazily per commentary bookId as groups become visible
+ * - Maintains a single combined Map<lineId, Highlight[]> across all loaded books
+ * - Exposes the same getHighlightsForLine / applyHighlight / clearHighlight API
+ *   as useBookViewHighlights so the renderer and copy menu can use it identically
+ * - Routes applyHighlight and clearHighlight to the correct commentary bookId by
+ *   looking up which book owns the given lineId in the current groups
  */
 import { ref, watch } from 'vue'
 import { queryUserSettings, executeUserSettings } from '@/webview-host/userSettingsDb'
 import { USER_SETTINGS_SQL } from '@/webview-host/userSettingsDb.sql'
-
-export interface Highlight {
-  id: number
-  bookId: number
-  lineId: number
-  startOffset: number
-  endOffset: number
-  colorArgb: number
-  createdAt: number
-}
+import type { Highlight } from '../lines/useBookViewHighlights'
+import type { CommentaryGroup } from './useCommentary'
 
 // Map from lineId → highlights on that line, sorted by startOffset
 type HighlightsByLine = Map<number, Highlight[]>
 
-export function useBookViewHighlights(bookId: number) {
+export function useCommentaryHighlights(getGroups: () => CommentaryGroup[]) {
   const highlightsByLine = ref<HighlightsByLine>(new Map())
-  const isLoaded = ref(false)
 
-  // ── Load ─────────────────────────────────────────────────────────────────
+  // Track which bookIds have already been loaded so we don't re-fetch
+  const loadedBookIds = new Set<number>()
 
-  async function loadHighlights() {
-    isLoaded.value = false
+  // Map from lineId → commentary bookId — needed so applyHighlight / clearHighlight
+  // know which bookId to pass to the DB when writing a new row
+  const lineIdToBookId = new Map<number, number>()
+
+  // ── Load ──────────────────────────────────────────────────────────────────
+
+  async function loadHighlightsForBook(commentaryBookId: number): Promise<void> {
+    if (loadedBookIds.has(commentaryBookId)) return
+    loadedBookIds.add(commentaryBookId)
     try {
       const rows = await queryUserSettings<{
         id: number
@@ -55,9 +47,8 @@ export function useBookViewHighlights(bookId: number) {
         endOffset: number
         colorArgb: number
         createdAt: number
-      }>(USER_SETTINGS_SQL.GET_HIGHLIGHTS_FOR_BOOK, [bookId])
+      }>(USER_SETTINGS_SQL.GET_HIGHLIGHTS_FOR_BOOK, [commentaryBookId])
 
-      const map: HighlightsByLine = new Map()
       for (const row of rows) {
         const highlight: Highlight = {
           id: row.id,
@@ -68,27 +59,46 @@ export function useBookViewHighlights(bookId: number) {
           colorArgb: Number(row.colorArgb),
           createdAt: Number(row.createdAt),
         }
-        const existing = map.get(highlight.lineId) ?? []
-        existing.push(highlight)
-        map.set(highlight.lineId, existing)
+        _addToMap(highlight)
       }
-      highlightsByLine.value = map
     } catch {
-      // DB not ready yet — silently skip, will retry when DB becomes available
-    } finally {
-      isLoaded.value = true
+      // DB not ready — silently skip; the watch below will re-run when groups change
+      loadedBookIds.delete(commentaryBookId)
     }
   }
 
-  loadHighlights()
+  // When the visible groups change, load highlights for any newly seen commentary books
+  watch(
+    getGroups,
+    (groups) => {
+      for (const group of groups) {
+        if (group.bookId > 0 && !loadedBookIds.has(group.bookId)) {
+          // Register all lineIds for this group before the async load so
+          // applyHighlight calls that arrive before the load finishes still
+          // know which bookId owns each line
+          for (const line of group.lines) {
+            if (line.lineId > 0) lineIdToBookId.set(line.lineId, group.bookId)
+          }
+          void loadHighlightsForBook(group.bookId)
+        }
+      }
+      // Keep lineIdToBookId up to date for lines already registered
+      for (const group of groups) {
+        for (const line of group.lines) {
+          if (line.lineId > 0) lineIdToBookId.set(line.lineId, group.bookId)
+        }
+      }
+    },
+    { immediate: true },
+  )
 
-  // ── Per-line lookup (called by renderer for each visible line) ────────────
+  // ── Per-line lookup ────────────────────────────────────────────────────────
 
   function getHighlightsForLine(lineId: number): Highlight[] {
     return highlightsByLine.value.get(lineId) ?? []
   }
 
-  // ── Internal map mutation helpers ─────────────────────────────────────────
+  // ── Internal map mutation helpers ──────────────────────────────────────────
 
   function _removeFromMap(highlight: Highlight) {
     const list = highlightsByLine.value.get(highlight.lineId)
@@ -115,9 +125,10 @@ export function useBookViewHighlights(bookId: number) {
     }
   }
 
-  // ── DB write helpers ──────────────────────────────────────────────────────
+  // ── DB write helpers (same logic as useBookViewHighlights) ─────────────────
 
   async function _insertHighlight(
+    commentaryBookId: number,
     lineId: number,
     startOffset: number,
     endOffset: number,
@@ -125,7 +136,7 @@ export function useBookViewHighlights(bookId: number) {
   ): Promise<Highlight> {
     const createdAt = Date.now()
     const insertedId = await executeUserSettings(USER_SETTINGS_SQL.INSERT_HIGHLIGHT, [
-      bookId,
+      commentaryBookId,
       lineId,
       startOffset,
       endOffset,
@@ -134,7 +145,7 @@ export function useBookViewHighlights(bookId: number) {
     ])
     const highlight: Highlight = {
       id: insertedId,
-      bookId,
+      bookId: commentaryBookId,
       lineId,
       startOffset,
       endOffset,
@@ -165,13 +176,8 @@ export function useBookViewHighlights(bookId: number) {
     _removeFromMap(highlight)
   }
 
-  // ── Apply highlight ───────────────────────────────────────────────────────
+  // ── Apply highlight ────────────────────────────────────────────────────────
 
-  /**
-   * Apply colorArgb to the range [startOffset, endOffset] on lineId.
-   * Handles overlapping existing highlights: merges same-color, trims/splits
-   * different-color highlights that overlap the new range.
-   */
   async function applyHighlight(
     lineId: number,
     startOffset: number,
@@ -180,71 +186,61 @@ export function useBookViewHighlights(bookId: number) {
   ): Promise<void> {
     if (startOffset >= endOffset) return
 
+    const commentaryBookId = lineIdToBookId.get(lineId)
+    if (commentaryBookId == null) return
+
     try {
       const existing = [...(highlightsByLine.value.get(lineId) ?? [])]
       const overlapping = existing.filter(
         (h) => h.startOffset < endOffset && h.endOffset > startOffset,
       )
 
-      // Compute the final merged range: start from the new range, then expand
-      // to include any same-color adjacent/overlapping highlights
       let mergedStart = startOffset
       let mergedEnd = endOffset
       const toDelete: Highlight[] = []
 
       for (const h of overlapping) {
         if (h.colorArgb === colorArgb) {
-          // Same color — absorb into merged range
           mergedStart = Math.min(mergedStart, h.startOffset)
           mergedEnd = Math.max(mergedEnd, h.endOffset)
           toDelete.push(h)
         } else {
-          // Different color — trim or split the existing highlight
-
           if (h.startOffset >= startOffset && h.endOffset <= endOffset) {
-            // Fully covered by new range → delete
             toDelete.push(h)
           } else if (h.startOffset < startOffset && h.endOffset > endOffset) {
-            // Existing fully covers new range → split into left + right stubs
             toDelete.push(h)
-            await _insertHighlight(lineId, h.startOffset, startOffset, h.colorArgb)
-            await _insertHighlight(lineId, endOffset, h.endOffset, h.colorArgb)
+            await _insertHighlight(commentaryBookId, lineId, h.startOffset, startOffset, h.colorArgb)
+            await _insertHighlight(commentaryBookId, lineId, endOffset, h.endOffset, h.colorArgb)
           } else if (h.startOffset < startOffset) {
-            // Overlaps on the left → trim its right end
             await _updateHighlight(h, h.startOffset, startOffset, h.colorArgb)
           } else {
-            // Overlaps on the right → trim its left start
             await _updateHighlight(h, endOffset, h.endOffset, h.colorArgb)
           }
         }
       }
 
-      // Delete absorbed same-color highlights
       for (const h of toDelete) {
         await _deleteHighlight(h)
       }
 
-      // Insert the final merged highlight
-      await _insertHighlight(lineId, mergedStart, mergedEnd, colorArgb)
+      await _insertHighlight(commentaryBookId, lineId, mergedStart, mergedEnd, colorArgb)
     } catch (err) {
-      console.error('[highlight] error:', err)
+      console.error('[commentary highlight] error:', err)
       throw err
     }
   }
 
-  // ── Clear highlight ───────────────────────────────────────────────────────
+  // ── Clear highlight ────────────────────────────────────────────────────────
 
-  /**
-   * Remove all highlights (regardless of color) in [startOffset, endOffset] on lineId.
-   * Highlights that partially overlap are trimmed; highlights fully covered are deleted;
-   * highlights that fully span the erased range are split into two stubs.
-   */
   async function clearHighlight(
     lineId: number,
     startOffset: number,
     endOffset: number,
   ): Promise<void> {
     if (startOffset >= endOffset) return
+
+    const commentaryBookId = lineIdToBookId.get(lineId)
+    if (commentaryBookId == null) return
 
     const existing = [...(highlightsByLine.value.get(lineId) ?? [])]
     const overlapping = existing.filter(
@@ -253,29 +249,22 @@ export function useBookViewHighlights(bookId: number) {
 
     for (const h of overlapping) {
       if (h.startOffset >= startOffset && h.endOffset <= endOffset) {
-        // Fully inside erased range → delete
         await _deleteHighlight(h)
       } else if (h.startOffset < startOffset && h.endOffset > endOffset) {
-        // Fully spans erased range → split
         await _deleteHighlight(h)
-        await _insertHighlight(lineId, h.startOffset, startOffset, h.colorArgb)
-        await _insertHighlight(lineId, endOffset, h.endOffset, h.colorArgb)
+        await _insertHighlight(commentaryBookId, lineId, h.startOffset, startOffset, h.colorArgb)
+        await _insertHighlight(commentaryBookId, lineId, endOffset, h.endOffset, h.colorArgb)
       } else if (h.startOffset < startOffset) {
-        // Overlaps on the left → trim right
         await _updateHighlight(h, h.startOffset, startOffset, h.colorArgb)
       } else {
-        // Overlaps on the right → trim left
         await _updateHighlight(h, endOffset, h.endOffset, h.colorArgb)
       }
     }
   }
 
   return {
-    highlightsByLine,
-    isLoaded,
     getHighlightsForLine,
     applyHighlight,
     clearHighlight,
-    reloadHighlights: loadHighlights,
   }
 }
