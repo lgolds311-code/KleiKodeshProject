@@ -338,7 +338,7 @@
     async function callDictaNakdan(text, genre) {
       const resp = await fetch("https://nakdan-5-1.loadbalancer.dicta.org.il/api", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "text/plain;charset=UTF-8" },
         body: JSON.stringify({
           task: "nakdan",
           data: text,
@@ -355,12 +355,8 @@
       // המבנה: מערך מילים, לכל אחת options[0].w עם הניקוד, או sep למפרידים.
       let out = "";
       data.forEach(function (item) {
-        if (item.sep) { out += item.word; return; }
-        if (item.options && item.options.length) {
-          out += item.options[0].w || item.word;
-        } else {
-          out += item.word;
-        }
+        if (item.sep || !item.options || !item.options.length) { out += item.word; return; }
+        out += (item.options[0][0] || item.word);
       });
       return out;
     }
