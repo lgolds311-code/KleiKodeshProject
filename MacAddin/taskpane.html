@@ -358,6 +358,11 @@
         if (item.sep || !item.options || !item.options.length) { out += item.word; return; }
         out += (item.options[0][0] || item.word);
       });
+      // ניקוי סימן הפרדת תחיליות של דיקטא
+      out = out.replace(/\|/g, "");
+      // שחזור גרשיים (״) וגרש (׳) שדיקטא המירה למרכאות ישרות
+      out = out.replace(/([א-ת][֑-ׇ]*)"(?=[֑-ׇ]*[א-ת])/g, "$1״");
+      out = out.replace(/([א-ת][֑-ׇ]*)'/g, "$1׳");
       return out;
     }
 
